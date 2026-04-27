@@ -19,6 +19,7 @@ from uacj_obd.acquisition import AcquisitionSession, SessionConfig
 from uacj_obd.adapters import open_adapter
 from uacj_obd.models import DTC, FreezeFrame, Monitor, Scenario, VehicleInfo
 from uacj_obd.pids import load_default_registry
+from uacj_obd.presets import PRESETS, apply_monitors_override, get_preset, list_presets
 from uacj_obd.storage import Database, SessionStore
 
 log = logging.getLogger(__name__)
@@ -265,6 +266,56 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         db.delete_scenario(scenario_id)
         return {"deleted": scenario_id}
 
+    @app.get("/api/presets")
+    def list_preset_endpoint() -> list[dict]:
+        return list_presets()
+
+    @app.post("/api/presets/{preset_id}/instantiate")
+    def instantiate_preset(preset_id: str, source_session_id: str | None = None) -> dict:
+        """
+        Build a new scenario from a preset on top of a saved session.
+        The session provides the vehicle identity and the live baseline;
+        the preset provides DTCs, freeze frame, and any live overrides.
+        """
+        preset = get_preset(preset_id)
+        if not preset:
+            raise HTTPException(404, "preset not found")
+
+        source = db.get_session(source_session_id) if source_session_id else None
+        vehicle = VehicleInfo(vin=source["vin"]) if source else VehicleInfo()
+
+        # Pull saved monitors and apply preset's monitor overrides if any
+        monitors: list[dict] = []
+        if source:
+            mon_path = Path(source["folder"]) / "monitors.json"
+            if mon_path.exists():
+                monitors = json.loads(mon_path.read_text())
+        if preset.get("monitors_override"):
+            monitors = apply_monitors_override(monitors, preset["monitors_override"])
+
+        scenario_id = uuid.uuid4().hex
+        ts = datetime.now(timezone.utc).isoformat()
+        scenario = Scenario(
+            scenario_id=scenario_id,
+            label=preset["label"],
+            source_session_id=source_session_id,
+            vehicle=vehicle,
+            dtcs=[DTC(**d) for d in preset.get("dtcs", [])],
+            monitors=[Monitor(**m) for m in monitors],
+            freeze_frame=FreezeFrame(**preset["freeze_frame"]) if preset.get("freeze_frame") else None,
+            live_overrides=preset.get("live_overrides") or {},
+        )
+        db.upsert_scenario(
+            scenario_id=scenario_id,
+            label=scenario.label,
+            source_session_id=source_session_id,
+            vin=vehicle.vin,
+            payload=scenario.model_dump(mode="json"),
+            created_at=ts,
+            updated_at=ts,
+        )
+        return scenario.model_dump(mode="json")
+
     @app.post("/api/scenarios/{scenario_id}/push")
     def push_scenario(scenario_id: str, sim_url: str = "http://uacj-sim.local:8765") -> dict:
         """
@@ -312,6 +363,23 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
                 }
         except Exception as exc:
             raise HTTPException(502, f"simulator push failed: {exc}") from exc
+
+    @app.get("/api/sim/log")
+    def sim_log(sim_url: str = "http://uacj-sim.local:8765", limit: int = 100) -> list[dict]:
+        """
+        Proxy the simulator board's request log to the laptop dashboard.
+        Lets the instructor see every request a student's scan tool sent
+        to the board, with timestamp, service, PID, and short summary.
+        """
+        try:
+            import httpx
+
+            with httpx.Client(timeout=3.0) as client:
+                r = client.get(f"{sim_url.rstrip('/')}/api/sim/log", params={"limit": limit})
+                r.raise_for_status()
+                return r.json()
+        except Exception as exc:
+            raise HTTPException(502, f"simulator log fetch failed: {exc}") from exc
 
     @app.post("/api/scenarios/{scenario_id}/replay")
     def replay_scenario(scenario_id: str, duration_s: float = 2.0) -> dict:

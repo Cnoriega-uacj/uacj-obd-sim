@@ -20,10 +20,18 @@ Supported services (subset of SAE J1979 needed for training):
 
 from __future__ import annotations
 
+import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
-from .encoders import encode_pid, encodable_pids, supported_pid_bitmap
+from .encoders import (
+    encodable_mfg_pids,
+    encodable_pids,
+    encode_mfg_pid,
+    encode_pid,
+    supported_pid_bitmap,
+)
 
 
 # Negative response codes (NRC)
@@ -108,37 +116,88 @@ def _negative(service: int, nrc: int) -> bytes:
     return bytes([0x7F, service & 0xFF, nrc])
 
 
+_SERVICE_NAMES = {
+    0x01: "current data", 0x02: "freeze frame",
+    0x03: "stored DTCs", 0x04: "clear DTCs",
+    0x07: "pending DTCs", 0x09: "vehicle info",
+    0x0A: "permanent DTCs", 0x22: "mfg PID",
+}
+
+
+def _summarize(request: bytes, response: bytes) -> str:
+    """Short human-readable description of one OBD-II request/response pair."""
+    if not request:
+        return "empty request"
+    service = request[0]
+    name = _SERVICE_NAMES.get(service, f"service 0x{service:02X}")
+    if response and response[0] == 0x7F:
+        return f"{name} → NRC 0x{response[2]:02X}"
+    if service == 0x01 and len(request) >= 2:
+        return f"{name} PID 0x{request[1]:02X}"
+    if service == 0x09 and len(request) >= 2:
+        return f"{name} PID 0x{request[1]:02X}"
+    if service == 0x22 and len(request) >= 3:
+        return f"{name} 0x{request[1]:02X}{request[2]:02X}"
+    if service == 0x03:
+        n = response[1] if len(response) >= 2 and response[0] == 0x43 else 0
+        return f"{name} (count={n})"
+    if service == 0x04:
+        return "clear DTCs"
+    return name
+
+
 class EcuEmulator:
-    def __init__(self, state: ScenarioState | None = None) -> None:
+    def __init__(self, state: ScenarioState | None = None, log_capacity: int = 500) -> None:
         self.state = state or ScenarioState()
+        # Bounded ring buffer of recent (request, response) interactions
+        # so the laptop can show "what did the student try?" in the
+        # classroom view. Bounded so a long class doesn't grow unbounded.
+        self.log: deque[dict] = deque(maxlen=log_capacity)
 
     def load(self, state: ScenarioState) -> None:
         self.state = state
+        # Don't clear the log on scenario reload — instructors want to
+        # see what the student did across scenario changes.
 
     # ---------- public dispatch ----------
 
     def handle(self, request: bytes) -> bytes:
         if not request:
-            return _negative(0x00, NRC_SERVICE_NOT_SUPPORTED)
+            response = _negative(0x00, NRC_SERVICE_NOT_SUPPORTED)
+            self._log_interaction(request, response)
+            return response
         service = request[0]
         try:
-            if service == 0x01:
-                return self._mode01(request[1:])
-            if service == 0x02:
-                return self._mode02(request[1:])
-            if service == 0x03:
-                return self._mode03()
-            if service == 0x04:
-                return self._mode04()
-            if service == 0x07:
-                return self._mode07()
-            if service == 0x09:
-                return self._mode09(request[1:])
-            if service == 0x0A:
-                return self._mode0A()
+            response = self._dispatch(service, request)
         except Exception:
-            return _negative(service, NRC_REQUEST_OUT_OF_RANGE)
-        return _negative(service, NRC_SERVICE_NOT_SUPPORTED)
+            response = _negative(service, NRC_REQUEST_OUT_OF_RANGE)
+        if response is None:
+            response = _negative(service, NRC_SERVICE_NOT_SUPPORTED)
+        self._log_interaction(request, response)
+        return response
+
+    def _dispatch(self, service: int, request: bytes) -> bytes | None:
+        if service == 0x01: return self._mode01(request[1:])
+        if service == 0x02: return self._mode02(request[1:])
+        if service == 0x03: return self._mode03()
+        if service == 0x04: return self._mode04()
+        if service == 0x07: return self._mode07()
+        if service == 0x09: return self._mode09(request[1:])
+        if service == 0x0A: return self._mode0A()
+        if service == 0x22: return self._mode22(request[1:])
+        return None
+
+    def _log_interaction(self, request: bytes, response: bytes) -> None:
+        self.log.append({
+            "ts": time.time(),
+            "service": request[0] if request else None,
+            "request": request.hex(),
+            "response": response.hex(),
+            "summary": _summarize(request, response),
+        })
+
+    def recent_log(self, limit: int = 100) -> list[dict]:
+        return list(self.log)[-limit:]
 
     # ---------- mode handlers ----------
 
@@ -226,6 +285,18 @@ class EcuEmulator:
 
     def _mode0A(self) -> bytes:
         return bytes([0x4A]) + _pack_dtc_list(self.state.dtcs_permanent)
+
+    def _mode22(self, args: bytes) -> bytes:
+        """Manufacturer-specific PID read (16-bit PID, ISO 14229 service 0x22)."""
+        if len(args) < 2:
+            return _negative(0x22, NRC_REQUEST_OUT_OF_RANGE)
+        pid = (args[0] << 8) | args[1]
+        key = f"22{pid:04X}"
+        value = self.state.live.get(key)
+        data = encode_mfg_pid(key, value)
+        if data is None:
+            return _negative(0x22, NRC_REQUEST_OUT_OF_RANGE)
+        return bytes([0x62, args[0], args[1]]) + data
 
     # ---------- helpers ----------
 

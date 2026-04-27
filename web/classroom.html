@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Classroom — UACJ OBD-II Simulator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --warn:#f0883e; --bad:#f85149; --ok:#3fb950; }
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  main { padding: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  input { background: #0d1117; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; flex: 1; min-width: 200px; }
+  button { background: var(--accent); color: #0d1117; border: 0; padding: 8px 12px; border-radius: 6px; font-weight: 600; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  code { background: #0d1117; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+  .pill.ok { background: rgba(63,185,80,.15); color: var(--ok); }
+  .pill.warn { background: rgba(240,136,62,.15); color: var(--warn); }
+  .pill.bad { background: rgba(248,81,73,.15); color: var(--bad); }
+  .meta { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">← Dashboard</a>
+  <h1>Classroom view</h1>
+  <span id="status" class="meta">disconnected</span>
+  <span id="counts" class="meta" style="margin-left:auto;"></span>
+</header>
+<main>
+  <div class="panel">
+    <h2>Simulator board</h2>
+    <div class="row">
+      <input id="sim-url" value="http://uacj-sim.local:8765" />
+      <button id="connect">Connect</button>
+      <label class="meta"><input type="checkbox" id="auto" checked /> auto-refresh (1s)</label>
+      <button id="clear" class="secondary">Clear log view</button>
+    </div>
+    <div class="meta" id="board-state"></div>
+  </div>
+  <br/>
+  <div class="panel">
+    <h2>Recent scan-tool requests (most recent on top)</h2>
+    <table>
+      <thead><tr><th>Time</th><th>Service</th><th>Summary</th><th>Request</th><th>Response</th></tr></thead>
+      <tbody id="log"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let timer = null;
+let lastSize = 0;
+
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+function fmtTs(ts) {
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString();
+}
+
+function fmtService(svc) {
+  return svc === null || svc === undefined ? "—" : "0x" + svc.toString(16).toUpperCase().padStart(2,"0");
+}
+
+function rowClass(entry) {
+  // NRC responses → warn pill in summary
+  if (entry.summary.includes("NRC")) return "warn";
+  if (entry.service === 0x04) return "bad";   // clear DTCs is destructive in real life
+  return "ok";
+}
+
+async function refresh() {
+  const url = $("sim-url").value;
+  try {
+    const state = await api(`/api/sim/state`).catch(async () => {
+      // Fallback: ask the sim directly via the laptop's proxy
+      return null;
+    });
+    // The laptop's /api/sim/log endpoint takes sim_url as a query arg
+    const log = await api(`/api/sim/log?sim_url=${encodeURIComponent(url)}&limit=200`);
+    $("status").textContent = "connected";
+    $("counts").textContent = `${log.length} entries`;
+    const reversed = log.slice().reverse();
+    $("log").innerHTML = reversed.map(e =>
+      `<tr><td class="meta">${fmtTs(e.ts)}</td>` +
+      `<td><span class="pill ${rowClass(e)}">${fmtService(e.service)}</span></td>` +
+      `<td>${e.summary}</td>` +
+      `<td><code>${e.request}</code></td>` +
+      `<td><code>${e.response}</code></td></tr>`
+    ).join("");
+  } catch (e) {
+    $("status").textContent = "error: " + e.message;
+  }
+}
+
+$("connect").onclick = () => {
+  if (timer) { clearInterval(timer); timer = null; }
+  refresh();
+  if ($("auto").checked) timer = setInterval(refresh, 1000);
+};
+
+$("auto").onchange = () => {
+  if (timer) { clearInterval(timer); timer = null; }
+  if ($("auto").checked) timer = setInterval(refresh, 1000);
+};
+
+$("clear").onclick = () => { $("log").innerHTML = ""; };
+</script>
+</body>
+</html>

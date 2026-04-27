@@ -46,7 +46,13 @@
   <aside class="panel stack">
     <h2>Scenarios</h2>
     <div id="scenario-list" class="stack"></div>
-    <h2>Create from session</h2>
+    <h2>From preset</h2>
+    <select id="preset-id"></select>
+    <select id="preset-source"></select>
+    <button id="instantiate-preset">Instantiate</button>
+    <div class="hint">Built-in presets ride on top of a saved session's live data.</div>
+
+    <h2>From scratch</h2>
     <select id="src-session"></select>
     <input id="new-label" placeholder="Label (e.g. P0420 catalyst lesson)" />
     <button id="create">Create scenario</button>
@@ -147,9 +153,36 @@ async function loadList() {
 
 async function loadSessions() {
   const sessions = await api("/api/sessions");
-  $("src-session").innerHTML = `<option value="">(no source — pure simulation)</option>` +
+  const opts = `<option value="">(no source — pure simulation)</option>` +
     sessions.map(s => `<option value="${s.session_id}">${s.session_id} · ${s.vin || "no-vin"}</option>`).join("");
+  $("src-session").innerHTML = opts;
+  $("preset-source").innerHTML = sessions.length === 0
+    ? `<option value="">(capture a vehicle first)</option>`
+    : sessions.map(s => `<option value="${s.session_id}">${s.session_id} · ${s.vin || "no-vin"}</option>`).join("");
 }
+
+async function loadPresets() {
+  const ps = await api("/api/presets");
+  $("preset-id").innerHTML = ps.map(p =>
+    `<option value="${p.id}" title="${p.description}">${p.label}</option>`).join("");
+}
+
+$("instantiate-preset").onclick = async () => {
+  const presetId = $("preset-id").value;
+  const sourceId = $("preset-source").value;
+  if (!sourceId) { alert("Pick a saved session first"); return; }
+  setStatus("instantiating preset…");
+  try {
+    const created = await api(`/api/presets/${presetId}/instantiate?source_session_id=${sourceId}`,
+                                { method: "POST" });
+    await loadList();
+    await loadScenario(created.scenario_id);
+    setStatus("preset instantiated");
+  } catch (e) {
+    setStatus("error");
+    alert(e.message);
+  }
+};
 
 async function loadScenario(id) {
   const s = scenarios.find(x => x.scenario_id === id);
@@ -284,6 +317,7 @@ $("create").onclick = async () => {
 
 loadList();
 loadSessions();
+loadPresets();
 </script>
 </body>
 </html>

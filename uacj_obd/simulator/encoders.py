@@ -152,3 +152,61 @@ def supported_pid_bitmap(pids: set[str], group: int) -> bytes:
 
 def encodable_pids() -> set[str]:
     return set(_ENCODERS.keys())
+
+
+# Mode 0x22 manufacturer PID encoders. Inverse of the formulas in
+# pids/data/manufacturer_starter.yaml. Adding a new mfg PID is a 5-line
+# addition here mirroring the YAML decode entry.
+
+def _enc_ford_trans_oil_temp(c: float) -> bytes:
+    raw = max(0, min(65535, int(round((c + 40) * 10))))
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_ford_key_on_runtime(s: float) -> bytes:
+    raw = max(0, min(65535, int(round(s))))
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_gm_oil_life(pct: float) -> bytes:
+    return bytes([_u8(pct * 255 / 100)])
+
+
+def _enc_gm_trans_fluid_temp(c: float) -> bytes:
+    return bytes([_u8(c + 40)])
+
+
+def _enc_toyota_engine_runtime(minutes: float) -> bytes:
+    raw = max(0, min(65535, int(round(minutes))))
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_honda_atf_temp(c: float) -> bytes:
+    return bytes([_u8(c + 40)])
+
+
+_MFG_ENCODERS: dict[str, Callable[..., bytes]] = {
+    "22115C": _enc_ford_trans_oil_temp,
+    "221101": _enc_ford_key_on_runtime,
+    "220005": _enc_gm_oil_life,
+    "22115A": _enc_gm_trans_fluid_temp,
+    "220101": _enc_toyota_engine_runtime,
+    "22015C": _enc_honda_atf_temp,
+}
+
+
+def encode_mfg_pid(pid_key: str, value: float | int | str | None) -> bytes | None:
+    """Encode a mode 0x22 manufacturer PID's value to response bytes."""
+    if value is None:
+        return None
+    enc = _MFG_ENCODERS.get(pid_key.upper())
+    if enc is None:
+        return None
+    try:
+        return enc(value)
+    except Exception:
+        return None
+
+
+def encodable_mfg_pids() -> set[str]:
+    return set(_MFG_ENCODERS.keys())

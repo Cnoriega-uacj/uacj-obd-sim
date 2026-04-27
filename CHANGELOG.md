@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.2.0 — 2026-04-27
+
+Polish and classroom features layered on top of v0.1.0. No protocol or
+storage breaking changes.
+
+### Scenario presets
+- Six built-in training cases (`uacj_obd/presets.py`):
+  P0420 catalyst, P0171 lean, P0301+P0300 misfire, P0455 EVAP large
+  leak, drive-cycle incomplete, U0100 lost-comm.
+- `GET /api/presets` and `POST /api/presets/{id}/instantiate` —
+  instantiate a preset on top of any saved session in one click.
+  The session provides the vehicle identity and live baseline; the
+  preset provides DTCs, freeze frame, and any monitor / live overrides.
+- Scenarios dashboard gains a "From preset" panel.
+
+### Manufacturer-specific PID simulation
+- Mode 0x22 dispatch added to the ECU (`ecu._mode22`).
+- Six manufacturer PID encoders mirroring the YAML decoders:
+  Ford trans-oil temp, Ford key-on runtime, GM oil life, GM trans
+  fluid temp, Toyota engine runtime, Honda ATF temp.
+- Scenarios that include 0x22 PID values in `live_overrides` (key
+  format `22XXXX`) are now answered by the simulator, completing the
+  manufacturer-PID loop end-to-end.
+
+### Classroom view
+- ECU keeps a bounded ring buffer (default 500 entries) of every
+  request → response pair, with timestamp, decoded service/PID, and
+  short summary.
+- `GET /api/sim/log` on the simulator board surfaces it; the laptop
+  proxies the same path so the dashboard works when the laptop is on
+  a different subnet.
+- New `/classroom.html` page: 1-second auto-refreshing tail of every
+  scan-tool request the board has seen, grouped by service with a
+  quick-scan pill (NRCs warn, clear-DTCs flagged red).
+
+### Tests
+- 10 new tests covering preset instantiation including monitor
+  overrides, mfg PID encode round-trip, mode 0x22 dispatch including
+  NRC paths, request log capture and bounding.
+- 55 tests total, all passing.
+
 ## 0.1.0 — 2026-04-27
 
 First milestone release. Phase 1 + Phase 2 features both delivered ahead

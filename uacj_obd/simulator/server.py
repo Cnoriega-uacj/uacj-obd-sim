@@ -59,4 +59,9 @@ def make_simulator_server(ecu: EcuEmulator) -> FastAPI:
         ecu.state.clear_dtcs()
         return {"cleared": True}
 
+    @app.get("/api/sim/log")
+    def log(limit: int = 100) -> list[dict]:
+        """Recent scan-tool requests this board has seen."""
+        return ecu.recent_log(limit=limit)
+
     return app
