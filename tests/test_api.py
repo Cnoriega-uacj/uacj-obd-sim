@@ -79,3 +79,50 @@ def test_scenario_crud(tmp_path: Path) -> None:
 
     r = c.delete(f"/api/scenarios/{sid}")
     assert r.status_code == 200
+
+
+def test_scenario_replay_into_session(tmp_path: Path) -> None:
+    c = _client(tmp_path)
+    # Capture a real session first
+    r = c.post("/api/sessions/start", json={"adapter": "mock", "duration_s": 0.3,
+                                              "pids": ["010C", "010D"]})
+    assert r.status_code == 200
+    src_id = r.json()["session_id"]
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not c.get("/api/sessions/current").json().get("active"):
+            break
+        time.sleep(0.1)
+
+    # Create a scenario tied to that session, with a DTC override + RPM override
+    r = c.post("/api/scenarios", json={
+        "label": "Misfire training scenario",
+        "source_session_id": src_id,
+        "dtcs": [{"code": "P0301", "status": "stored", "description": "Cyl 1 misfire"}],
+        "live_overrides": {"010C": 4500},
+    })
+    assert r.status_code == 200
+    scenario_id = r.json()["scenario_id"]
+
+    # Replay scenario back through ReplayAdapter into a new session
+    r = c.post(f"/api/scenarios/{scenario_id}/replay?duration_s=0.4")
+    assert r.status_code == 200, r.text
+    replay_sid = r.json()["session_id"]
+
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if not c.get("/api/sessions/current").json().get("active"):
+            break
+        time.sleep(0.1)
+
+    # The replayed session should have the modified DTCs saved
+    r = c.get(f"/api/sessions/{replay_sid}")
+    assert r.status_code == 200
+    body = r.json()
+    assert any(d["code"] == "P0301" for d in body["dtcs"])
+
+    live = c.get(f"/api/sessions/{replay_sid}/live?limit=200").json()
+    rpm_samples = [s for s in live if s["pid"] == "010C"]
+    assert rpm_samples
+    assert all(s["value"] == 4500 for s in rpm_samples)

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Scenarios — UACJ OBD-II Simulator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --warn:#f0883e; --bad:#f85149; --ok:#3fb950; }
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  header .sub { color: var(--muted); font-size: 13px; margin-left: auto; }
+  main { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  button { background: var(--accent); color: #0d1117; border: 0; padding: 8px 12px; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  button.danger { background: transparent; color: var(--bad); border: 1px solid var(--bad); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row > * { min-width: 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  input, select, textarea { background: #0d1117; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; width: 100%; }
+  .stack > * + * { margin-top: 12px; }
+  .scenario-item { padding: 8px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+  .scenario-item.active { border-color: var(--accent); background: rgba(88,166,255,.05); }
+  .scenario-item .label { font-weight: 600; }
+  .scenario-item .meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  code { background: #0d1117; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .toolbar { display: flex; gap: 8px; }
+  .col-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Scenarios</h1>
+  <a href="/">← Acquisition Dashboard</a>
+  <span class="sub" id="status">ready</span>
+</header>
+<main>
+  <aside class="panel stack">
+    <h2>Scenarios</h2>
+    <div id="scenario-list" class="stack"></div>
+    <h2>Create from session</h2>
+    <select id="src-session"></select>
+    <input id="new-label" placeholder="Label (e.g. P0420 catalyst lesson)" />
+    <button id="create">Create scenario</button>
+  </aside>
+
+  <section class="stack">
+    <div class="panel" id="editor" style="display:none">
+      <div class="row" style="justify-content: space-between; margin-bottom: 12px;">
+        <input id="edit-label" />
+        <div class="toolbar">
+          <button id="save">Save</button>
+          <button id="replay" class="secondary">Replay → simulator</button>
+          <button id="delete" class="danger">Delete</button>
+        </div>
+      </div>
+
+      <div class="col-2">
+        <div>
+          <h2>Vehicle</h2>
+          <table id="vehicle-tbl"></table>
+        </div>
+        <div>
+          <h2>Live overrides</h2>
+          <table>
+            <thead><tr><th>PID</th><th>Value</th><th></th></tr></thead>
+            <tbody id="overrides-tbl"></tbody>
+          </table>
+          <div class="row" style="margin-top: 8px;">
+            <input id="ov-pid" placeholder="e.g. 010C" style="max-width: 100px;" />
+            <input id="ov-val" placeholder="value" style="max-width: 120px;" />
+            <button id="ov-add" class="secondary">Add</button>
+          </div>
+          <div class="hint">Override values replace the saved samples for that PID.</div>
+        </div>
+      </div>
+
+      <h2>DTCs</h2>
+      <table>
+        <thead><tr><th>Code</th><th>Status</th><th>Description</th><th></th></tr></thead>
+        <tbody id="dtcs-tbl"></tbody>
+      </table>
+      <div class="row" style="margin-top: 8px;">
+        <input id="dtc-code" placeholder="P0420" style="max-width: 120px;" />
+        <select id="dtc-status" style="max-width: 140px;">
+          <option value="stored">stored</option>
+          <option value="pending">pending</option>
+          <option value="permanent">permanent</option>
+        </select>
+        <input id="dtc-desc" placeholder="description" />
+        <button id="dtc-add" class="secondary">Add</button>
+      </div>
+
+      <h2>Monitors</h2>
+      <table>
+        <thead><tr><th>Monitor</th><th>Supported</th><th>Ready</th></tr></thead>
+        <tbody id="monitors-tbl"></tbody>
+      </table>
+    </div>
+
+    <div class="panel" id="empty">
+      <div class="hint">Select a scenario on the left, or create one from a saved session.</div>
+    </div>
+  </section>
+</main>
+
+<script>
+let active = null;
+let scenarios = [];
+
+async function api(path, opts={}) {
+  const r = await fetch(path, { headers: {"Content-Type": "application/json"}, ...opts });
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+const $ = id => document.getElementById(id);
+const setStatus = t => $("status").textContent = t;
+
+async function loadList() {
+  scenarios = await api("/api/scenarios");
+  const list = $("scenario-list");
+  list.innerHTML = scenarios.length === 0
+    ? `<div class="hint">no scenarios yet</div>`
+    : scenarios.map(s => {
+        const p = s.payload;
+        const v = p.vehicle || {};
+        const cls = (active && active.scenario_id === s.scenario_id) ? "active" : "";
+        return `<div class="scenario-item ${cls}" data-id="${s.scenario_id}">
+          <div class="label">${p.label || "(unlabeled)"}</div>
+          <div class="meta">${[v.year, v.make, v.model].filter(Boolean).join(" ") || "—"} · ${(p.dtcs||[]).length} DTCs</div>
+        </div>`;
+      }).join("");
+  for (const el of list.querySelectorAll(".scenario-item")) {
+    el.onclick = () => loadScenario(el.dataset.id);
+  }
+}
+
+async function loadSessions() {
+  const sessions = await api("/api/sessions");
+  $("src-session").innerHTML = `<option value="">(no source — pure simulation)</option>` +
+    sessions.map(s => `<option value="${s.session_id}">${s.session_id} · ${s.vin || "no-vin"}</option>`).join("");
+}
+
+async function loadScenario(id) {
+  const s = scenarios.find(x => x.scenario_id === id);
+  if (!s) return;
+  active = { scenario_id: id, ...s.payload };
+  $("empty").style.display = "none";
+  $("editor").style.display = "";
+  $("edit-label").value = active.label || "";
+  const v = active.vehicle || {};
+  $("vehicle-tbl").innerHTML = ["vin","make","model","year","calibration_id","ecu_name"]
+    .map(k => `<tr><th>${k}</th><td><input data-vk="${k}" value="${v[k]||""}" /></td></tr>`).join("");
+  renderDtcs();
+  renderMonitors();
+  renderOverrides();
+  await loadList();
+}
+
+function renderDtcs() {
+  $("dtcs-tbl").innerHTML = (active.dtcs || []).map((d, i) =>
+    `<tr><td><code>${d.code}</code></td><td>${d.status}</td><td>${d.description||""}</td>
+     <td><button class="danger" data-rm-dtc="${i}">×</button></td></tr>`).join("");
+  for (const b of $("dtcs-tbl").querySelectorAll("[data-rm-dtc]"))
+    b.onclick = () => { active.dtcs.splice(+b.dataset.rmDtc, 1); renderDtcs(); };
+}
+
+function renderMonitors() {
+  $("monitors-tbl").innerHTML = (active.monitors || []).map((m, i) =>
+    `<tr><td>${m.name}</td>
+     <td><input type="checkbox" data-m-sup="${i}" ${m.supported?"checked":""}/></td>
+     <td><input type="checkbox" data-m-rd="${i}" ${m.ready?"checked":""}/></td></tr>`).join("");
+  for (const cb of $("monitors-tbl").querySelectorAll("[data-m-sup]"))
+    cb.onchange = () => active.monitors[+cb.dataset.mSup].supported = cb.checked;
+  for (const cb of $("monitors-tbl").querySelectorAll("[data-m-rd]"))
+    cb.onchange = () => active.monitors[+cb.dataset.mRd].ready = cb.checked;
+}
+
+function renderOverrides() {
+  const ov = active.live_overrides || {};
+  $("overrides-tbl").innerHTML = Object.entries(ov).map(([pid, val]) =>
+    `<tr><td><code>${pid}</code></td><td>${val}</td>
+     <td><button class="danger" data-rm-ov="${pid}">×</button></td></tr>`).join("");
+  for (const b of $("overrides-tbl").querySelectorAll("[data-rm-ov]"))
+    b.onclick = () => { delete active.live_overrides[b.dataset.rmOv]; renderOverrides(); };
+}
+
+$("dtc-add").onclick = () => {
+  const code = $("dtc-code").value.trim();
+  if (!code) return;
+  active.dtcs = active.dtcs || [];
+  active.dtcs.push({ code, status: $("dtc-status").value, description: $("dtc-desc").value });
+  $("dtc-code").value = $("dtc-desc").value = "";
+  renderDtcs();
+};
+
+$("ov-add").onclick = () => {
+  const pid = $("ov-pid").value.trim().toUpperCase();
+  const v = $("ov-val").value;
+  if (!pid || v === "") return;
+  active.live_overrides = active.live_overrides || {};
+  active.live_overrides[pid] = isNaN(+v) ? v : +v;
+  $("ov-pid").value = $("ov-val").value = "";
+  renderOverrides();
+};
+
+$("save").onclick = async () => {
+  active.label = $("edit-label").value;
+  for (const inp of $("vehicle-tbl").querySelectorAll("input[data-vk]")) {
+    active.vehicle[inp.dataset.vk] = inp.dataset.vk === "year" ? (parseInt(inp.value) || null) : (inp.value || null);
+  }
+  setStatus("saving…");
+  await api(`/api/scenarios/${active.scenario_id}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      label: active.label,
+      dtcs: active.dtcs || [],
+      monitors: active.monitors || [],
+      live_overrides: active.live_overrides || {},
+    }),
+  });
+  setStatus("saved");
+  await loadList();
+};
+
+$("delete").onclick = async () => {
+  if (!confirm("Delete scenario?")) return;
+  await api(`/api/scenarios/${active.scenario_id}`, { method: "DELETE" });
+  active = null;
+  $("editor").style.display = "none";
+  $("empty").style.display = "";
+  await loadList();
+};
+
+$("replay").onclick = async () => {
+  setStatus("replaying…");
+  try {
+    const r = await api(`/api/scenarios/${active.scenario_id}/replay?duration_s=2`, { method: "POST" });
+    setStatus(`replayed → session ${r.session_id.slice(0,16)}`);
+  } catch (e) {
+    setStatus("replay error");
+    alert(e.message);
+  }
+};
+
+$("create").onclick = async () => {
+  const label = $("new-label").value.trim();
+  if (!label) return;
+  const src = $("src-session").value || null;
+  let vehicle = {};
+  if (src) {
+    const s = await api(`/api/sessions/${src}`);
+    vehicle = { vin: s.metadata.vin };
+  }
+  const created = await api("/api/scenarios", {
+    method: "POST",
+    body: JSON.stringify({ label, source_session_id: src, vehicle, dtcs: [], monitors: [], live_overrides: {} }),
+  });
+  $("new-label").value = "";
+  await loadList();
+  await loadScenario(created.scenario_id);
+};
+
+loadList();
+loadSessions();
+</script>
+</body>
+</html>

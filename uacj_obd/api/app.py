@@ -28,6 +28,7 @@ class StartSessionRequest(BaseModel):
     adapter: str = "auto"
     portstr: str | None = None
     pids: list[str] | None = None
+    manufacturer_pids: list[str] | None = None
     duration_s: float | None = None
     notes: str = ""
 
@@ -91,6 +92,7 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         adapter = open_adapter(req.adapter, portstr=req.portstr) if req.portstr else open_adapter(req.adapter)
         cfg = SessionConfig(
             pids=req.pids or SessionConfig().pids,
+            manufacturer_pids=req.manufacturer_pids or [],
             notes=req.notes,
         )
         sess = AcquisitionSession(adapter, store, db, pid_reg, cfg)
@@ -262,6 +264,46 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
     def delete_scenario(scenario_id: str) -> dict:
         db.delete_scenario(scenario_id)
         return {"deleted": scenario_id}
+
+    @app.post("/api/scenarios/{scenario_id}/replay")
+    def replay_scenario(scenario_id: str, duration_s: float = 2.0) -> dict:
+        """
+        Replay a scenario through the ReplayAdapter into a new captured session.
+        Used by the simulator workflow as an end-to-end self-test: it proves
+        the saved-session → modify → replay loop works without hardware.
+        """
+        if state["current"] is not None:
+            raise HTTPException(409, "another session is already running")
+        scenario = db.get_scenario(scenario_id)
+        if not scenario:
+            raise HTTPException(404, "scenario not found")
+        payload = scenario["payload"]
+        source_id = payload.get("source_session_id")
+        if not source_id:
+            raise HTTPException(400, "scenario has no source session to replay from")
+        source = db.get_session(source_id)
+        if not source:
+            raise HTTPException(404, "source session missing")
+        from uacj_obd.adapters.replay import ReplayAdapter
+
+        adapter = ReplayAdapter(source["folder"], scenario_overrides=payload)
+        sess = AcquisitionSession(adapter, store, db, pid_reg,
+                                    SessionConfig(notes=f"replay of scenario {scenario_id}"))
+        meta = sess.start()
+
+        def _runner() -> None:
+            try:
+                sess.run(duration_s=duration_s)
+            finally:
+                sess.close()
+                state["current"] = None
+                state["thread"] = None
+
+        thread = threading.Thread(target=_runner, daemon=True, name=f"replay-{meta.session_id}")
+        state["current"] = sess
+        state["thread"] = thread
+        thread.start()
+        return {"session_id": meta.session_id, "scenario_id": scenario_id}
 
     # --- static dashboard --------------------------------------------
 

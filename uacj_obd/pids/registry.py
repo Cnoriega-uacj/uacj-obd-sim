@@ -31,7 +31,9 @@ class PidDefinition:
 
     @property
     def key(self) -> str:
-        return f"{self.mode:02X}{self.pid:02X}"
+        # Mode 0x22 manufacturer PIDs use a 16-bit PID; everything else (J1979) is 8-bit.
+        width = 4 if self.mode == 0x22 else 2
+        return f"{self.mode:02X}{self.pid:0{width}X}"
 
 
 class PidRegistry:

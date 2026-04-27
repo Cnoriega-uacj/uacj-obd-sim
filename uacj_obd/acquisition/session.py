@@ -29,8 +29,9 @@ def _now() -> datetime:
 class SessionConfig:
     pids: list[str] = field(default_factory=lambda: [
         "010C", "010D", "0105", "010F", "0110", "0111", "0104",
-        "0106", "0107", "010B", "0114", "012F",
+        "0106", "0107", "010B", "0114", "012F", "0103", "011F",
     ])
+    manufacturer_pids: list[str] = field(default_factory=list)
     sample_interval_s: float = 0.1
     max_reconnects: int = 10
     notes: str = ""
@@ -86,6 +87,24 @@ class AcquisitionSession:
         except AdapterError as exc:
             log.warning("freeze frame read failed: %s", exc)
 
+    def _read_manufacturer_pid(self, key: str) -> LiveSample | None:
+        """Read a mode 0x22 manufacturer PID by key (e.g. '22115C') and decode."""
+        if self.pid_registry is None:
+            return None
+        defn = self.pid_registry.get(key)
+        if defn is None or defn.mode != 0x22:
+            return None
+        try:
+            data = self.adapter.read_raw(defn.mode, defn.pid)
+        except AdapterError:
+            return None
+        if not data:
+            return None
+        value = self.pid_registry.decode(key, data)
+        if value is None:
+            return None
+        return LiveSample(pid=key, name=defn.name, value=value, unit=defn.unit)
+
     def _connect(self) -> VehicleInfo:
         status = self.adapter.connect()
         if status.state != ConnectionState.CONNECTED:
@@ -131,12 +150,20 @@ class AcquisitionSession:
         reconnects = 0
         sample_count = 0
         pids = list(self.config.pids)
+        mfg_pids = list(self.config.manufacturer_pids)
         while not self._stop.is_set():
             try:
                 for pid in pids:
                     if self._stop.is_set():
                         break
                     sample = self.adapter.read_pid(pid)
+                    if sample is not None:
+                        self._writer.write_sample(sample)
+                        sample_count += 1
+                for mfg_key in mfg_pids:
+                    if self._stop.is_set():
+                        break
+                    sample = self._read_manufacturer_pid(mfg_key)
                     if sample is not None:
                         self._writer.write_sample(sample)
                         sample_count += 1
