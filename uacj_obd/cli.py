@@ -108,13 +108,18 @@ def serve(ctx: click.Context, host: str, port: int) -> None:
 @main.command()
 @click.option("--channel", default="can0", show_default=True,
               help="SocketCAN channel for the OBD-II port responder.")
+@click.option("--kline-port", default="/dev/serial0", show_default=True,
+              help="UART tied to the L9637 K-Line transceiver.")
+@click.option("--kline-baud", default=10400, show_default=True,
+              help="K-Line baudrate (10400 for KWP2000 fast init).")
 @click.option("--http-host", default="0.0.0.0", show_default=True)
 @click.option("--http-port", default=8765, show_default=True,
               help="Port the laptop pushes scenarios to.")
-@click.option("--no-can", is_flag=True,
-              help="Run the HTTP server only (useful for benchtop testing without CAN).")
-def simulator(channel: str, http_host: str, http_port: int, no_can: bool) -> None:
-    """Run the Pi-side simulator: CAN responder + scenario HTTP server."""
+@click.option("--no-can", is_flag=True, help="Skip the CAN responder.")
+@click.option("--no-kline", is_flag=True, help="Skip the K-Line responder.")
+def simulator(channel: str, kline_port: str, kline_baud: int,
+                http_host: str, http_port: int, no_can: bool, no_kline: bool) -> None:
+    """Run the Pi-side simulator: CAN + K-Line responders + scenario HTTP server."""
     import threading
 
     import uvicorn
@@ -123,26 +128,41 @@ def simulator(channel: str, http_host: str, http_port: int, no_can: bool) -> Non
     from uacj_obd.simulator.server import make_simulator_server
 
     ecu = EcuEmulator()
-    runtime = None
+    runtimes: list = []
+
     if not no_can:
         from uacj_obd.simulator.can_runtime import CanRuntime
 
         try:
-            runtime = CanRuntime.open_socketcan(ecu, channel=channel)
+            can_rt = CanRuntime.open_socketcan(ecu, channel=channel)
         except Exception as exc:
-            console.print(f"[yellow]warning[/]: CAN bus unavailable ({exc}); HTTP server only")
+            console.print(f"[yellow]warning[/]: CAN bus unavailable ({exc})")
         else:
-            t = threading.Thread(target=runtime.run, daemon=True, name="can-loop")
+            t = threading.Thread(target=can_rt.run, daemon=True, name="can-loop")
             t.start()
-            console.print(f"[green]✓[/] CAN responder running on {channel}")
+            runtimes.append(can_rt)
+            console.print(f"[green]✓[/] CAN responder on {channel}")
+
+    if not no_kline:
+        from uacj_obd.simulator.kline_runtime import KlineRuntime
+
+        try:
+            kl_rt = KlineRuntime.open_serial(ecu, port=kline_port, baudrate=kline_baud)
+        except Exception as exc:
+            console.print(f"[yellow]warning[/]: K-Line UART unavailable ({exc})")
+        else:
+            t = threading.Thread(target=kl_rt.run, daemon=True, name="kline-loop")
+            t.start()
+            runtimes.append(kl_rt)
+            console.print(f"[green]✓[/] K-Line responder on {kline_port} @ {kline_baud}")
 
     app = make_simulator_server(ecu)
     console.print(f"[green]✓[/] simulator HTTP listening on {http_host}:{http_port}")
     try:
         uvicorn.run(app, host=http_host, port=http_port, log_level="info")
     finally:
-        if runtime:
-            runtime.stop()
+        for rt in runtimes:
+            rt.stop()
 
 
 if __name__ == "__main__":
