@@ -58,7 +58,8 @@
         <input id="edit-label" />
         <div class="toolbar">
           <button id="save">Save</button>
-          <button id="replay" class="secondary">Replay → simulator</button>
+          <button id="push" class="secondary">Push to board</button>
+          <button id="replay" class="secondary">Replay (test)</button>
           <button id="delete" class="danger">Delete</button>
         </div>
       </div>
@@ -239,6 +240,17 @@ $("delete").onclick = async () => {
   $("editor").style.display = "none";
   $("empty").style.display = "";
   await loadList();
+};
+
+$("push").onclick = async () => {
+  const url = prompt("Simulator board URL", "http://uacj-sim.local:8765");
+  if (!url) return;
+  setStatus("pushing…");
+  try {
+    const r = await api(`/api/scenarios/${active.scenario_id}/push?sim_url=${encodeURIComponent(url)}`,
+                          { method: "POST" });
+    setStatus(`pushed → ${r.sim_response.vin || "ok"}`);
+  } catch (e) { setStatus("push error"); alert(e.message); }
 };
 
 $("replay").onclick = async () => {

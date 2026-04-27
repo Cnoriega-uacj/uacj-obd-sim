@@ -105,5 +105,45 @@ def serve(ctx: click.Context, host: str, port: int) -> None:
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
+@main.command()
+@click.option("--channel", default="can0", show_default=True,
+              help="SocketCAN channel for the OBD-II port responder.")
+@click.option("--http-host", default="0.0.0.0", show_default=True)
+@click.option("--http-port", default=8765, show_default=True,
+              help="Port the laptop pushes scenarios to.")
+@click.option("--no-can", is_flag=True,
+              help="Run the HTTP server only (useful for benchtop testing without CAN).")
+def simulator(channel: str, http_host: str, http_port: int, no_can: bool) -> None:
+    """Run the Pi-side simulator: CAN responder + scenario HTTP server."""
+    import threading
+
+    import uvicorn
+
+    from uacj_obd.simulator import EcuEmulator
+    from uacj_obd.simulator.server import make_simulator_server
+
+    ecu = EcuEmulator()
+    runtime = None
+    if not no_can:
+        from uacj_obd.simulator.can_runtime import CanRuntime
+
+        try:
+            runtime = CanRuntime.open_socketcan(ecu, channel=channel)
+        except Exception as exc:
+            console.print(f"[yellow]warning[/]: CAN bus unavailable ({exc}); HTTP server only")
+        else:
+            t = threading.Thread(target=runtime.run, daemon=True, name="can-loop")
+            t.start()
+            console.print(f"[green]✓[/] CAN responder running on {channel}")
+
+    app = make_simulator_server(ecu)
+    console.print(f"[green]✓[/] simulator HTTP listening on {http_host}:{http_port}")
+    try:
+        uvicorn.run(app, host=http_host, port=http_port, log_level="info")
+    finally:
+        if runtime:
+            runtime.stop()
+
+
 if __name__ == "__main__":
     main(obj={})

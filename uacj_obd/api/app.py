@@ -265,6 +265,26 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         db.delete_scenario(scenario_id)
         return {"deleted": scenario_id}
 
+    @app.post("/api/scenarios/{scenario_id}/push")
+    def push_scenario(scenario_id: str, sim_url: str = "http://uacj-sim.local:8765") -> dict:
+        """
+        Push a scenario to the Pi simulator over HTTP. The Pi swaps its
+        ECU emulator state atomically and starts answering scan tools
+        with the new scenario's DTCs / live values / VIN.
+        """
+        scenario = db.get_scenario(scenario_id)
+        if not scenario:
+            raise HTTPException(404, "scenario not found")
+        try:
+            import httpx
+
+            with httpx.Client(timeout=5.0) as client:
+                r = client.post(f"{sim_url.rstrip('/')}/api/sim/load", json=scenario["payload"])
+                r.raise_for_status()
+                return {"pushed": True, "sim_response": r.json()}
+        except Exception as exc:
+            raise HTTPException(502, f"simulator push failed: {exc}") from exc
+
     @app.post("/api/scenarios/{scenario_id}/replay")
     def replay_scenario(scenario_id: str, duration_s: float = 2.0) -> dict:
         """
