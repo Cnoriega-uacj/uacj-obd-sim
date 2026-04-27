@@ -364,6 +364,17 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         except Exception as exc:
             raise HTTPException(502, f"simulator push failed: {exc}") from exc
 
+    @app.get("/api/diff")
+    def diff_two_sessions(a: str, b: str) -> dict:
+        """Compare two captured sessions: DTC delta, monitor delta, per-PID stats."""
+        from uacj_obd.diff import diff_sessions
+
+        row_a = db.get_session(a)
+        row_b = db.get_session(b)
+        if not row_a or not row_b:
+            raise HTTPException(404, "session not found")
+        return diff_sessions(Path(row_a["folder"]), Path(row_b["folder"]))
+
     @app.get("/api/sim/log")
     def sim_log(sim_url: str = "http://uacj-sim.local:8765", limit: int = 100) -> list[dict]:
         """

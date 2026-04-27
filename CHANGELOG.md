@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.0 — 2026-04-27
+
+Three additions, all reviewed for legal risk before implementation
+(per project guidance) and confirmed zero-risk before code was written:
+
+### Session diff view (no risk: read-only on local data)
+- New `uacj_obd.diff.diff_sessions(folder_a, folder_b)`: structured
+  comparison of two captured sessions covering vehicle identity, DTCs
+  (added / removed / common), readiness monitor changes, and per-PID
+  summary statistics (n, min, max, mean, median, delta-mean and delta%
+  with a "shifted" flag for >5% drift).
+- `GET /api/diff?a=...&b=...` exposes it.
+- New `/diff.html` page: dropdowns for both sessions, side-by-side
+  output with color-coded added / removed / shifted rows.
+
+### 5-baud slow-init (no risk: published ISO 14230-2 standard)
+- `simulator/kline.slow_init_step()`: stateless single-byte handler
+  for the ISO 9141-2 / KWP2000 5-baud handshake (address byte 0x33
+  → sync 0x55 + KB1 + KB2; tester's inverted KB2 → ECU's inverted
+  address). Lets the simulator answer scan tools that don't speak
+  the more common KWP fast-init.
+- `simulator/kline_runtime` recognizes handshake bytes on the UART
+  and answers them transparently — the byte never reaches the frame
+  decoder.
+
+### Compatibility log (no risk: documentation)
+- New `docs/compatibility.md`: methodology for verifying scan-tool
+  compatibility against the simulator (six-step procedure: connect,
+  VIN, DTCs, live data, clear, freeze frame), template for adding
+  entries, list of common student / professional tools to test once
+  hardware arrives, known v0.x simulator limitations.
+
+### Items deferred pending legal review (not built):
+- Multi-ECU emulation including BCM (immobilizer / anti-theft risk)
+- PDF session report (potential misrepresentation as legal inspection)
+
+### Tests
+- 8 new tests covering diff (DTCs added/removed/common, PID stats,
+  endpoint round-trip, 404 handling) and slow-init (address-byte
+  reply, ~KB2 reply, unrelated bytes ignored, runtime handshake
+  passthrough). 63 tests total, all passing.
+
 ## 0.2.0 — 2026-04-27
 
 Polish and classroom features layered on top of v0.1.0. No protocol or

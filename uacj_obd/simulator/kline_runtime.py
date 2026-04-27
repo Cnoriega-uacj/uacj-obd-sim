@@ -13,10 +13,13 @@ import time
 from .ecu import EcuEmulator
 from .kline import (
     ECU_ADDRESS_PHYSICAL,
+    KEY_BYTE_2,
+    SLOW_INIT_ADDRESS_OBD,
     KlineError,
     KwpFrame,
     decode,
     encode_response,
+    slow_init_step,
     total_frame_length,
 )
 
@@ -60,12 +63,26 @@ class KlineRuntime:
         return encode_response(response_payload, target=req.source, source=ECU_ADDRESS_PHYSICAL)
 
     def _read_one_frame(self) -> bytes | None:
-        """Best-effort blocking read of one complete KWP frame from the UART."""
-        # First byte (fmt)
+        """Best-effort blocking read of one complete KWP frame from the UART.
+
+        Handles the ISO 14230-2 5-baud slow-init handshake transparently:
+        when the first byte is 0x33 (address) or 0xF7 (~KB2 reply), the
+        appropriate handshake bytes are emitted and we return None to
+        indicate "no full request frame yet".
+        """
         first = self.serial.read(1)
         if not first:
             return None
-        fmt = first[0]
+        b = first[0]
+        if b == SLOW_INIT_ADDRESS_OBD or b == ((~KEY_BYTE_2) & 0xFF):
+            reply = slow_init_step(b)
+            if reply:
+                try:
+                    self.serial.write(reply)
+                except Exception:
+                    pass
+            return None
+        fmt = b
         # Read enough bytes to determine length
         head = bytearray(first)
         head.extend(self.serial.read(2))  # tgt + src

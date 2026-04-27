@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Diff — UACJ OBD-II Simulator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --warn:#f0883e; --bad:#f85149; --ok:#3fb950; --add:#3fb950; --rem:#f85149; }
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  main { padding: 16px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  select, button { background: #0d1117; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  button.primary { background: var(--accent); color: #0d1117; border: 0; font-weight: 600; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  code { background: #0d1117; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .add { color: var(--add); }
+  .rem { color: var(--rem); }
+  .shifted { color: var(--warn); }
+  .stable { color: var(--muted); }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; }
+  .pill.add { background: rgba(63,185,80,.15); }
+  .pill.rem { background: rgba(248,81,73,.15); }
+  .meta { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">← Dashboard</a>
+  <h1>Compare two sessions</h1>
+</header>
+<main>
+  <div class="panel row">
+    <span class="meta">A:</span> <select id="sel-a"></select>
+    <span class="meta">B:</span> <select id="sel-b"></select>
+    <button class="primary" id="run">Compare</button>
+  </div>
+  <div id="result"></div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+async function loadSessions() {
+  const sessions = await api("/api/sessions");
+  const opts = sessions.map(s =>
+    `<option value="${s.session_id}">${s.session_id} · ${s.vin || "no-vin"} · ${s.sample_count} samples</option>`).join("");
+  $("sel-a").innerHTML = opts;
+  $("sel-b").innerHTML = opts;
+  if (sessions.length >= 2) {
+    $("sel-a").value = sessions[1].session_id;
+    $("sel-b").value = sessions[0].session_id;
+  }
+}
+
+function fmt(v) {
+  if (v == null) return "—";
+  if (typeof v === "number") return v.toFixed(2);
+  return v;
+}
+
+function renderVehicle(v) {
+  const keys = Object.keys(v || {});
+  if (keys.length === 0) return `<div class="meta">no differences</div>`;
+  return `<table><thead><tr><th>Field</th><th>A</th><th>B</th></tr></thead><tbody>${
+    keys.map(k => `<tr><td>${k}</td><td class="rem">${v[k].a || "—"}</td><td class="add">${v[k].b || "—"}</td></tr>`).join("")
+  }</tbody></table>`;
+}
+
+function renderDtcs(dtcs) {
+  const lines = [];
+  for (const d of dtcs.removed)  lines.push(`<tr><td><span class="pill rem">−</span></td><td><code>${d.code}</code></td><td>${d.status}</td><td>${d.description||""}</td></tr>`);
+  for (const d of dtcs.added)    lines.push(`<tr><td><span class="pill add">+</span></td><td><code>${d.code}</code></td><td>${d.status}</td><td>${d.description||""}</td></tr>`);
+  for (const d of dtcs.common)   lines.push(`<tr><td class="meta">=</td><td><code>${d.code}</code></td><td class="meta">${d.status}</td><td class="meta">${d.description||""}</td></tr>`);
+  if (!lines.length) return `<div class="meta">no DTCs in either session</div>`;
+  return `<table><thead><tr><th></th><th>Code</th><th>Status</th><th>Description</th></tr></thead><tbody>${lines.join("")}</tbody></table>`;
+}
+
+function renderMonitors(changes) {
+  if (!changes.length) return `<div class="meta">no monitor changes</div>`;
+  return `<table><thead><tr><th>Monitor</th><th>A — supported</th><th>A — ready</th><th>B — supported</th><th>B — ready</th></tr></thead><tbody>${
+    changes.map(m => `<tr><td>${m.name}</td><td>${m.a.supported}</td><td>${m.a.ready}</td><td>${m.b.supported}</td><td>${m.b.ready}</td></tr>`).join("")
+  }</tbody></table>`;
+}
+
+function renderPids(pids) {
+  if (!pids.length) return `<div class="meta">no live data in either session</div>`;
+  // sort: shifted/added/removed first, then alphabetical
+  const order = { added:0, removed:0, shifted:1, stable:2 };
+  pids.sort((x,y) => (order[x.status]??9) - (order[y.status]??9) || x.pid.localeCompare(y.pid));
+  return `<table>
+    <thead><tr><th></th><th>PID</th><th>Name</th><th>A mean</th><th>B mean</th><th>Δ</th><th>Δ %</th></tr></thead>
+    <tbody>${pids.map(p => {
+      const a = p.a ? p.a.mean : null;
+      const b = p.b ? p.b.mean : null;
+      const cls = p.status;
+      return `<tr class="${cls}">
+        <td>${p.status === "added" ? '<span class="pill add">+</span>' :
+              p.status === "removed" ? '<span class="pill rem">−</span>' :
+              p.status === "shifted" ? '⚠' : '·'}</td>
+        <td><code>${p.pid}</code></td>
+        <td>${p.name||""}</td>
+        <td>${fmt(a)}</td>
+        <td>${fmt(b)}</td>
+        <td>${p.delta_mean != null ? p.delta_mean.toFixed(2) : "—"}</td>
+        <td>${p.delta_pct != null ? p.delta_pct.toFixed(1) + "%" : "—"}</td>
+      </tr>`;
+    }).join("")}</tbody></table>`;
+}
+
+$("run").onclick = async () => {
+  const a = $("sel-a").value, b = $("sel-b").value;
+  if (!a || !b) return;
+  const data = await api(`/api/diff?a=${a}&b=${b}`);
+  $("result").innerHTML = `
+    <div class="panel"><h2>Vehicle</h2>${renderVehicle(data.vehicle)}</div>
+    <div class="panel"><h2>DTCs</h2>${renderDtcs(data.dtcs)}</div>
+    <div class="panel"><h2>Readiness monitors changed</h2>${renderMonitors(data.monitors_changed)}</div>
+    <div class="panel"><h2>Live data — per-PID summary</h2>${renderPids(data.pids)}</div>`;
+};
+
+loadSessions();
+</script>
+</body>
+</html>

@@ -112,6 +112,36 @@ def decode(frame: bytes) -> KwpFrame:
     return KwpFrame(fmt=fmt, target=target, source=source, data=bytes(data))
 
 
+SLOW_INIT_ADDRESS_OBD = 0x33  # ISO 9141-2 / KWP2000 OBD entry address
+SLOW_INIT_SYNC_BYTE = 0x55    # ECU sync after the address byte
+KEY_BYTE_1 = 0x08             # KWP2000 fast = 0x8F; here we present "old" 9141-2 KB1
+KEY_BYTE_2 = 0x08             # KB2: protocol version (matches KB1 for 9141-2)
+
+
+def slow_init_step(rx_byte: int) -> bytes:
+    """
+    Stateless decoder for one byte of a 5-baud slow-init handshake.
+
+    Returns the bytes the ECU should send back, or empty bytes if the
+    received byte is part of a multi-step handshake we are still
+    waiting on.
+
+    Sequence per ISO 14230-2 §5.2.4 / ISO 9141-2:
+      tester → 0x33 (address byte at 5 baud)
+      ECU    → 0x55 KB1 KB2 (at protocol baud, typically 10.4 kbps)
+      tester → ~KB2 within W4 (25-50ms)
+      ECU    → ~0x33 (= 0xCC)
+      → handshake complete, normal KWP frames follow
+    """
+    inverted_kb2 = (~KEY_BYTE_2) & 0xFF
+    inverted_addr = (~SLOW_INIT_ADDRESS_OBD) & 0xFF
+    if rx_byte == SLOW_INIT_ADDRESS_OBD:
+        return bytes([SLOW_INIT_SYNC_BYTE, KEY_BYTE_1, KEY_BYTE_2])
+    if rx_byte == inverted_kb2:
+        return bytes([inverted_addr])
+    return b""
+
+
 def total_frame_length(fmt: int, peek: bytes) -> int | None:
     """
     Inspect partial bytes to compute the expected total frame length.
