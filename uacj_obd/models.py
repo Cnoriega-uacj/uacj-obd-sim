@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import Enum
+
+from pydantic import BaseModel, Field
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Protocol(str, Enum):
+    AUTO = "auto"
+    ISO_15765_4_CAN_11_500 = "iso_15765_4_can_11_500"
+    ISO_15765_4_CAN_29_500 = "iso_15765_4_can_29_500"
+    ISO_15765_4_CAN_11_250 = "iso_15765_4_can_11_250"
+    ISO_15765_4_CAN_29_250 = "iso_15765_4_can_29_250"
+    ISO_14230_4_KWP_FAST = "iso_14230_4_kwp_fast"
+    ISO_14230_4_KWP_5BAUD = "iso_14230_4_kwp_5baud"
+    ISO_9141_2 = "iso_9141_2"
+    SAE_J1850_VPW = "sae_j1850_vpw"
+    SAE_J1850_PWM = "sae_j1850_pwm"
+    UNKNOWN = "unknown"
+
+
+class DTCStatus(str, Enum):
+    STORED = "stored"
+    PENDING = "pending"
+    PERMANENT = "permanent"
+
+
+class Monitor(BaseModel):
+    name: str
+    supported: bool
+    ready: bool
+
+
+class FreezeFrame(BaseModel):
+    dtc: str | None = None
+    pids: dict[str, float | int | str] = Field(default_factory=dict)
+
+
+class DTC(BaseModel):
+    code: str
+    status: DTCStatus
+    description: str = ""
+
+
+class VehicleInfo(BaseModel):
+    vin: str | None = None
+    make: str | None = None
+    model: str | None = None
+    year: int | None = None
+    calibration_id: str | None = None
+    ecu_name: str | None = None
+
+
+class LiveSample(BaseModel):
+    ts: datetime = Field(default_factory=utcnow)
+    pid: str
+    name: str
+    value: float | int | str | None
+    unit: str | None = None
+
+
+class SessionMetadata(BaseModel):
+    session_id: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    protocol: Protocol = Protocol.UNKNOWN
+    adapter: str = ""
+    vehicle: VehicleInfo = Field(default_factory=VehicleInfo)
+    sample_count: int = 0
+    notes: str = ""
+
+
+class Scenario(BaseModel):
+    """A modifiable copy of a captured session, used to feed the simulator."""
+
+    scenario_id: str
+    label: str
+    source_session_id: str | None = None
+    vehicle: VehicleInfo
+    dtcs: list[DTC] = Field(default_factory=list)
+    monitors: list[Monitor] = Field(default_factory=list)
+    freeze_frame: FreezeFrame | None = None
+    live_overrides: dict[str, float | int | str] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)

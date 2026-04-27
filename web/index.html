@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>UACJ OBD-II Training Simulator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --warn:#f0883e; --bad:#f85149; --ok:#3fb950; }
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: 280px 1fr; gap: 16px; padding: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  button { background: var(--accent); color: #0d1117; border: 0; padding: 8px 12px; border-radius: 6px; font-weight: 600; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .gauges { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px,1fr)); gap: 10px; }
+  .gauge { background: #0d1117; border: 1px solid var(--line); border-radius: 6px; padding: 10px; }
+  .gauge .name { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .gauge .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .gauge .unit { color: var(--muted); font-size: 12px; margin-left: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  .dtc-stored { color: var(--bad); }
+  .dtc-pending { color: var(--warn); }
+  .dtc-permanent { color: var(--bad); font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+  .pill.ok { background: rgba(63,185,80,.15); color: var(--ok); }
+  .pill.warn { background: rgba(240,136,62,.15); color: var(--warn); }
+  .pill.bad { background: rgba(248,81,73,.15); color: var(--bad); }
+  input, select, textarea { background: #0d1117; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  .muted { color: var(--muted); }
+  .stack > * + * { margin-top: 12px; }
+  code { background: #0d1117; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>UACJ OBD-II Training Simulator</h1>
+  <span class="sub">Phase 1 — Acquisition Dashboard</span>
+  <span class="pill ok" id="status-pill">idle</span>
+</header>
+<main>
+  <aside class="panel stack">
+    <h2>Session</h2>
+    <div class="row">
+      <select id="adapter">
+        <option value="auto">auto</option>
+        <option value="mock" selected>mock</option>
+        <option value="elm327">elm327</option>
+      </select>
+      <input id="port" placeholder="port (e.g. /dev/ttyUSB0)" style="flex:1; min-width: 0;" />
+    </div>
+    <div class="row">
+      <button id="start">Start</button>
+      <button id="stop" class="secondary" disabled>Stop</button>
+    </div>
+    <div id="vehicle" class="muted">no vehicle connected</div>
+
+    <h2>Vehicles</h2>
+    <div id="vehicles"></div>
+
+    <h2>Past Sessions</h2>
+    <div id="sessions"></div>
+  </aside>
+
+  <section class="stack">
+    <div class="panel">
+      <h2>Live Parameters</h2>
+      <div class="gauges" id="gauges"></div>
+    </div>
+    <div class="panel">
+      <h2>DTCs</h2>
+      <table><thead><tr><th>Code</th><th>Status</th><th>Description</th></tr></thead>
+        <tbody id="dtcs"></tbody></table>
+    </div>
+    <div class="panel">
+      <h2>Readiness Monitors</h2>
+      <table><thead><tr><th>Monitor</th><th>Supported</th><th>Ready</th></tr></thead>
+        <tbody id="monitors"></tbody></table>
+    </div>
+  </section>
+</main>
+
+<script>
+const PIDS = ["010C","010D","0105","010F","0110","0111","0104","0106","0107","010B","0114","012F"];
+let pollTimer = null;
+let currentSessionId = null;
+
+function $(id) { return document.getElementById(id); }
+function setStatus(text, kind="ok") {
+  const p = $("status-pill");
+  p.textContent = text;
+  p.className = "pill " + kind;
+}
+
+async function api(path, opts={}) {
+  const r = await fetch(path, { headers: {"Content-Type": "application/json"}, ...opts });
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+async function start() {
+  const adapter = $("adapter").value;
+  const port = $("port").value || null;
+  setStatus("starting…", "warn");
+  try {
+    const r = await api("/api/sessions/start", { method: "POST",
+      body: JSON.stringify({ adapter, portstr: port, pids: PIDS }) });
+    currentSessionId = r.session_id;
+    setStatus(`recording: ${r.session_id.slice(0,16)}…`, "ok");
+    $("start").disabled = true;
+    $("stop").disabled = false;
+    $("vehicle").innerHTML = renderVehicle(r.vehicle);
+    await loadStatic();
+    pollTimer = setInterval(refresh, 800);
+  } catch (e) {
+    setStatus("error", "bad");
+    alert(e.message);
+  }
+}
+
+async function stop() {
+  try {
+    await api("/api/sessions/stop", { method: "POST" });
+    setStatus("stopping…", "warn");
+  } catch (e) { alert(e.message); }
+}
+
+function renderVehicle(v) {
+  if (!v) return "no vehicle";
+  const bits = [];
+  if (v.year) bits.push(v.year);
+  if (v.make) bits.push(v.make);
+  if (v.model) bits.push(v.model);
+  return `<div><strong>${bits.join(" ") || "Unknown vehicle"}</strong></div>` +
+         `<div class="muted">VIN: <code>${v.vin || "—"}</code></div>`;
+}
+
+async function loadStatic() {
+  if (!currentSessionId) return;
+  const s = await api(`/api/sessions/${currentSessionId}`);
+  const dtcs = s.dtcs || [];
+  $("dtcs").innerHTML = dtcs.length === 0
+    ? `<tr><td colspan="3" class="muted">no DTCs</td></tr>`
+    : dtcs.map(d => `<tr><td><code>${d.code}</code></td><td class="dtc-${d.status}">${d.status}</td><td>${d.description||""}</td></tr>`).join("");
+  const mons = s.monitors || [];
+  $("monitors").innerHTML = mons.map(m =>
+    `<tr><td>${m.name}</td><td>${m.supported ? '<span class="pill ok">yes</span>' : '<span class="pill bad">no</span>'}</td>` +
+    `<td>${m.ready ? '<span class="pill ok">ready</span>' : '<span class="pill warn">incomplete</span>'}</td></tr>`).join("");
+}
+
+async function refresh() {
+  if (!currentSessionId) return;
+  const live = await api(`/api/sessions/${currentSessionId}/live?limit=200`);
+  const latest = {};
+  for (const s of live) latest[s.pid] = s;
+  $("gauges").innerHTML = PIDS.map(p => {
+    const s = latest[p];
+    if (!s) return `<div class="gauge"><div class="name">${p}</div><div class="value muted">—</div></div>`;
+    const v = typeof s.value === "number" ? s.value.toFixed(1) : s.value;
+    return `<div class="gauge"><div class="name">${s.name || p}</div>` +
+           `<div class="value">${v}<span class="unit">${s.unit || ""}</span></div></div>`;
+  }).join("");
+  const cur = await api("/api/sessions/current");
+  if (!cur.active) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+    $("start").disabled = false;
+    $("stop").disabled = true;
+    setStatus("idle");
+    await loadVehicles();
+    await loadSessions();
+  }
+}
+
+async function loadVehicles() {
+  const v = await api("/api/vehicles");
+  $("vehicles").innerHTML = v.length === 0
+    ? `<div class="muted">none yet</div>`
+    : v.map(x => `<div>${x.year || ""} ${x.make || ""} ${x.model || ""} <span class="muted">${x.vin}</span></div>`).join("");
+}
+
+async function loadSessions() {
+  const s = await api("/api/sessions");
+  $("sessions").innerHTML = s.length === 0
+    ? `<div class="muted">none yet</div>`
+    : s.slice(0, 10).map(x => `<div><a href="/api/sessions/${x.session_id}/export.csv">${x.session_id}</a> <span class="muted">${x.sample_count} samples</span></div>`).join("");
+}
+
+$("start").onclick = start;
+$("stop").onclick = stop;
+loadVehicles();
+loadSessions();
+</script>
+</body>
+</html>
