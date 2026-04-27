@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Session — UACJ OBD-II Simulator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --warn:#f0883e; --bad:#f85149; --ok:#3fb950; }
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--fg); margin: 0; }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  code { background: #0d1117; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  select, button { background: #0d1117; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; }
+  button.primary { background: var(--accent); color: #0d1117; border: 0; font-weight: 600; }
+  .full { grid-column: span 2; }
+  .meta-grid { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 13px; }
+  .meta-grid dt { color: var(--muted); }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+  .pill.ok { background: rgba(63,185,80,.15); color: var(--ok); }
+  .pill.warn { background: rgba(240,136,62,.15); color: var(--warn); }
+  .pill.bad { background: rgba(248,81,73,.15); color: var(--bad); }
+  svg { width: 100%; height: 220px; display: block; }
+  .axis { stroke: var(--line); }
+  .grid { stroke: var(--line); stroke-dasharray: 2 2; opacity: .4; }
+  .series { fill: none; stroke: var(--accent); stroke-width: 1.5; }
+  .label { fill: var(--muted); font: 11px ui-sans-serif; }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">← Dashboard</a>
+  <h1 id="title">Session</h1>
+  <span class="sub" id="vehicle"></span>
+  <span class="sub" style="margin-left: auto;" id="counts"></span>
+</header>
+<main>
+  <section class="panel full">
+    <h2>Live data — <select id="pid-select"></select></h2>
+    <svg id="chart" viewBox="0 0 800 220" preserveAspectRatio="none"></svg>
+    <div class="sub" id="chart-meta" style="font-size:12px;color:var(--muted);"></div>
+  </section>
+  <section class="panel">
+    <h2>Metadata</h2>
+    <dl class="meta-grid" id="meta"></dl>
+  </section>
+  <section class="panel">
+    <h2>Vehicle</h2>
+    <dl class="meta-grid" id="vehicle-meta"></dl>
+    <div style="margin-top:10px;">
+      <a id="csv" target="_blank">Download CSV</a>
+    </div>
+  </section>
+  <section class="panel">
+    <h2>DTCs</h2>
+    <table><thead><tr><th>Code</th><th>Status</th><th>Description</th></tr></thead>
+      <tbody id="dtcs"></tbody></table>
+  </section>
+  <section class="panel">
+    <h2>Readiness Monitors</h2>
+    <table><thead><tr><th>Monitor</th><th>Supported</th><th>Ready</th></tr></thead>
+      <tbody id="monitors"></tbody></table>
+  </section>
+  <section class="panel full">
+    <h2>Recent samples (raw)</h2>
+    <table><thead><tr><th>Timestamp</th><th>PID</th><th>Name</th><th>Value</th><th>Unit</th></tr></thead>
+      <tbody id="raw"></tbody></table>
+  </section>
+</main>
+
+<script>
+const params = new URLSearchParams(location.search);
+const sessionId = params.get("id");
+const $ = id => document.getElementById(id);
+
+async function api(path) {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+function renderMeta(m) {
+  const dl = $("meta");
+  const rows = [
+    ["Session ID", m.session_id],
+    ["Started", m.started_at],
+    ["Ended", m.ended_at || "—"],
+    ["Protocol", m.protocol || "unknown"],
+    ["Adapter", m.adapter || "—"],
+    ["Samples", m.sample_count],
+  ];
+  dl.innerHTML = rows.map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
+  $("counts").textContent = `${m.sample_count} samples`;
+  $("title").textContent = `Session ${m.session_id.slice(0,16)}…`;
+  $("csv").href = `/api/sessions/${m.session_id}/export.csv`;
+}
+
+function renderVehicleMeta(vin) {
+  const veh = vin || {};
+  $("vehicle-meta").innerHTML = ["vin","make","model","year","calibration_id","ecu_name"]
+    .map(k => `<dt>${k}</dt><dd>${veh[k] || "—"}</dd>`).join("");
+  $("vehicle").textContent = [veh.year, veh.make, veh.model].filter(Boolean).join(" ");
+}
+
+function renderDtcs(dtcs) {
+  $("dtcs").innerHTML = (dtcs || []).length === 0
+    ? `<tr><td colspan="3" style="color:var(--muted);">no DTCs</td></tr>`
+    : dtcs.map(d => `<tr><td><code>${d.code}</code></td><td>${d.status}</td><td>${d.description||""}</td></tr>`).join("");
+}
+
+function renderMonitors(monitors) {
+  $("monitors").innerHTML = (monitors || []).map(m =>
+    `<tr><td>${m.name}</td>` +
+    `<td>${m.supported ? '<span class="pill ok">yes</span>' : '<span class="pill bad">no</span>'}</td>` +
+    `<td>${m.ready ? '<span class="pill ok">ready</span>' : '<span class="pill warn">incomplete</span>'}</td></tr>`).join("");
+}
+
+function renderRaw(samples) {
+  const last = samples.slice(-200).reverse();
+  $("raw").innerHTML = last.map(s =>
+    `<tr><td>${s.ts}</td><td><code>${s.pid}</code></td><td>${s.name}</td><td>${s.value}</td><td>${s.unit||""}</td></tr>`
+  ).join("");
+}
+
+function drawChart(samples, pid) {
+  const svg = $("chart");
+  svg.innerHTML = "";
+  const series = samples.filter(s => s.pid === pid && typeof s.value === "number");
+  if (series.length < 2) {
+    svg.innerHTML = `<text class="label" x="20" y="100">no numeric samples for ${pid}</text>`;
+    $("chart-meta").textContent = "";
+    return;
+  }
+  const W = 800, H = 220, P = 24;
+  const xs = series.map((_, i) => i);
+  const ys = series.map(s => +s.value);
+  const ymin = Math.min(...ys), ymax = Math.max(...ys);
+  const yspan = (ymax - ymin) || 1;
+  const xMap = i => P + (i / (xs.length - 1)) * (W - 2*P);
+  const yMap = v => H - P - ((v - ymin) / yspan) * (H - 2*P);
+  // Grid
+  const gridLines = 4;
+  let grid = "";
+  for (let i = 0; i <= gridLines; i++) {
+    const y = P + i * (H - 2*P) / gridLines;
+    grid += `<line class="grid" x1="${P}" y1="${y}" x2="${W-P}" y2="${y}" />`;
+  }
+  // Axes
+  grid += `<line class="axis" x1="${P}" y1="${H-P}" x2="${W-P}" y2="${H-P}" />`;
+  grid += `<line class="axis" x1="${P}" y1="${P}" x2="${P}" y2="${H-P}" />`;
+  // Series
+  const path = "M " + series.map((s, i) => `${xMap(i).toFixed(1)} ${yMap(+s.value).toFixed(1)}`).join(" L ");
+  grid += `<path class="series" d="${path}" />`;
+  // Y axis labels
+  grid += `<text class="label" x="4" y="${P+4}">${ymax.toFixed(1)}</text>`;
+  grid += `<text class="label" x="4" y="${H-P+4}">${ymin.toFixed(1)}</text>`;
+  svg.innerHTML = grid;
+  const unit = series[0].unit || "";
+  $("chart-meta").textContent = `${series[0].name} · ${series.length} samples · min ${ymin.toFixed(2)}${unit} · max ${ymax.toFixed(2)}${unit}`;
+}
+
+async function load() {
+  if (!sessionId) {
+    document.body.innerHTML = "<p style='padding:20px'>Missing ?id=&lt;session_id&gt;</p>";
+    return;
+  }
+  const session = await api(`/api/sessions/${sessionId}`);
+  renderMeta(session.metadata);
+  renderVehicleMeta({ vin: session.metadata.vin });
+  renderDtcs(session.dtcs);
+  renderMonitors(session.monitors);
+  const samples = await api(`/api/sessions/${sessionId}/live?limit=10000`);
+  renderRaw(samples);
+  // Build PID picker
+  const pids = [...new Set(samples.map(s => s.pid))];
+  const sel = $("pid-select");
+  sel.innerHTML = pids.map(p => `<option value="${p}">${p} — ${samples.find(s => s.pid===p)?.name || ""}</option>`).join("");
+  sel.onchange = () => drawChart(samples, sel.value);
+  if (pids.length > 0) {
+    sel.value = pids[0];
+    drawChart(samples, pids[0]);
+  }
+}
+
+load().catch(e => alert(e.message));
+</script>
+</body>
+</html>

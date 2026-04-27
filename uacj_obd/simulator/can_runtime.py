@@ -101,13 +101,23 @@ def scenario_to_state(scenario_payload: dict, source_session: dict | None = None
     """
     Convert an API scenario payload (and optionally the source session
     metadata) into a ScenarioState the ECU emulator can use.
+
+    Live data merging order (later wins):
+      1. scenario_payload["live_baseline"] — typically the latest value
+         per-PID from the source session, populated by the laptop before
+         pushing so the simulator can answer any PID the original car
+         answered.
+      2. source_session["live_latest"] (if passed separately).
+      3. scenario_payload["live_overrides"] — instructor's edits.
     """
     from .ecu import ScenarioState
 
     vehicle = scenario_payload.get("vehicle") or {}
     live: dict[str, float | int | str] = {}
+    if scenario_payload.get("live_baseline"):
+        live.update({k.upper(): v for k, v in scenario_payload["live_baseline"].items()})
     if source_session and source_session.get("live_latest"):
-        live.update(source_session["live_latest"])
+        live.update({k.upper(): v for k, v in source_session["live_latest"].items()})
     live.update({k.upper(): v for k, v in (scenario_payload.get("live_overrides") or {}).items()})
 
     state = ScenarioState(

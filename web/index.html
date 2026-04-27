@@ -191,7 +191,7 @@ async function loadSessions() {
   const s = await api("/api/sessions");
   $("sessions").innerHTML = s.length === 0
     ? `<div class="muted">none yet</div>`
-    : s.slice(0, 10).map(x => `<div><a href="/api/sessions/${x.session_id}/export.csv">${x.session_id}</a> <span class="muted">${x.sample_count} samples</span></div>`).join("");
+    : s.slice(0, 10).map(x => `<div><a href="/session.html?id=${x.session_id}">${x.session_id}</a> <span class="muted">${x.sample_count} samples</span></div>`).join("");
 }
 
 $("start").onclick = start;

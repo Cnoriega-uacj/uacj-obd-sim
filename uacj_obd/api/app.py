@@ -268,20 +268,48 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
     @app.post("/api/scenarios/{scenario_id}/push")
     def push_scenario(scenario_id: str, sim_url: str = "http://uacj-sim.local:8765") -> dict:
         """
-        Push a scenario to the Pi simulator over HTTP. The Pi swaps its
-        ECU emulator state atomically and starts answering scan tools
-        with the new scenario's DTCs / live values / VIN.
+        Push a scenario to the Pi simulator over HTTP.
+
+        Pre-merges the *latest value per PID* from the source session as
+        a live baseline; the scenario's live_overrides ride on top. This
+        means the simulator answers every PID the original car answered,
+        not just the ones the instructor explicitly modified.
         """
         scenario = db.get_scenario(scenario_id)
         if not scenario:
             raise HTTPException(404, "scenario not found")
+        payload = dict(scenario["payload"])
+
+        source_id = payload.get("source_session_id")
+        if source_id:
+            source = db.get_session(source_id)
+            if source:
+                live_path = Path(source["folder"]) / "live_data.jsonl"
+                if live_path.exists():
+                    latest: dict[str, Any] = {}
+                    with live_path.open() as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            obj = json.loads(line)
+                            pid = obj.get("pid")
+                            value = obj.get("value")
+                            if pid and value is not None:
+                                latest[pid] = value
+                    payload["live_baseline"] = latest
+
         try:
             import httpx
 
             with httpx.Client(timeout=5.0) as client:
-                r = client.post(f"{sim_url.rstrip('/')}/api/sim/load", json=scenario["payload"])
+                r = client.post(f"{sim_url.rstrip('/')}/api/sim/load", json=payload)
                 r.raise_for_status()
-                return {"pushed": True, "sim_response": r.json()}
+                return {
+                    "pushed": True,
+                    "baseline_pids": len(payload.get("live_baseline") or {}),
+                    "sim_response": r.json(),
+                }
         except Exception as exc:
             raise HTTPException(502, f"simulator push failed: {exc}") from exc
 
