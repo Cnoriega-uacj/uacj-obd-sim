@@ -9,7 +9,7 @@ import logging
 
 from fastapi import FastAPI
 
-from .ecu import EcuEmulator, ScenarioState
+from .ecu import EcuEmulator
 from .can_runtime import scenario_to_state
 
 log = logging.getLogger(__name__)

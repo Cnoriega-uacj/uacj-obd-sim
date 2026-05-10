@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>UACJ OBD-II Training Simulator</title>
+<title data-i18n="app.title">UACJ OBD-II Training Simulator</title>
+<script src="/i18n.js"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
   :root { --bg:#0e1116; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --warn:#f0883e; --bad:#f85149; --ok:#3fb950; }
@@ -41,50 +42,67 @@
 </head>
 <body>
 <header>
-  <h1>UACJ OBD-II Training Simulator</h1>
-  <span class="sub">Phase 1 — Acquisition Dashboard</span>
-  <a href="/scenarios.html" style="color:var(--accent); text-decoration:none; font-size:13px;">Scenarios →</a>
-  <a href="/classroom.html" style="color:var(--accent); text-decoration:none; font-size:13px;">Classroom →</a>
-  <a href="/diff.html" style="color:var(--accent); text-decoration:none; font-size:13px;">Diff →</a>
-  <span class="pill ok" id="status-pill">idle</span>
+  <h1 data-i18n="app.title">UACJ OBD-II Training Simulator</h1>
+  <span class="sub" data-i18n="app.subtitle.acquisition">Phase 1 — Acquisition Dashboard</span>
+  <a href="/scenarios.html" data-i18n="nav.scenarios" style="color:var(--accent); text-decoration:none; font-size:13px;">Scenarios →</a>
+  <a href="/classroom.html" data-i18n="nav.classroom" style="color:var(--accent); text-decoration:none; font-size:13px;">Classroom →</a>
+  <a href="/diff.html" data-i18n="nav.diff" style="color:var(--accent); text-decoration:none; font-size:13px;">Diff →</a>
+  <span class="pill ok" id="status-pill" data-i18n="status.idle">idle</span>
 </header>
 <main>
   <aside class="panel stack">
-    <h2>Session</h2>
+    <h2 data-i18n="session.heading">Session</h2>
     <div class="row">
       <select id="adapter">
         <option value="auto">auto</option>
         <option value="mock" selected>mock</option>
         <option value="elm327">elm327</option>
       </select>
-      <input id="port" placeholder="port (e.g. /dev/ttyUSB0)" style="flex:1; min-width: 0;" />
+      <input id="port" data-i18n-placeholder="session.port" placeholder="port (e.g. /dev/ttyUSB0)" style="flex:1; min-width: 0;" />
     </div>
     <div class="row">
-      <button id="start">Start</button>
-      <button id="stop" class="secondary" disabled>Stop</button>
+      <button id="start" data-i18n="session.start">Start</button>
+      <button id="stop" class="secondary" data-i18n="session.stop" disabled>Stop</button>
     </div>
-    <div id="vehicle" class="muted">no vehicle connected</div>
+    <div id="vehicle" class="muted" data-i18n="session.no_vehicle">no vehicle connected</div>
 
-    <h2>Vehicles</h2>
+    <h2 data-i18n="vehicles.heading">Vehicles</h2>
     <div id="vehicles"></div>
 
-    <h2>Past Sessions</h2>
+    <h2 data-i18n="sessions.heading">Past Sessions</h2>
     <div id="sessions"></div>
+
+    <h2 data-i18n="common.backup">Backup all data</h2>
+    <div class="row">
+      <button id="backup-btn" class="secondary" data-i18n="common.backup">Backup all data</button>
+    </div>
+    <div class="row">
+      <input type="file" id="restore-file" accept=".zip" style="font-size:12px; flex:1; min-width:0;" />
+      <button id="restore-btn" class="secondary" data-i18n="common.restore">Restore</button>
+    </div>
   </aside>
 
   <section class="stack">
     <div class="panel">
-      <h2>Live Parameters</h2>
+      <h2 data-i18n="live.heading">Live Parameters</h2>
       <div class="gauges" id="gauges"></div>
     </div>
     <div class="panel">
-      <h2>DTCs</h2>
-      <table><thead><tr><th>Code</th><th>Status</th><th>Description</th></tr></thead>
+      <h2 data-i18n="dtcs.heading">DTCs</h2>
+      <table><thead><tr>
+        <th data-i18n="dtcs.code">Code</th>
+        <th data-i18n="dtcs.status">Status</th>
+        <th data-i18n="dtcs.description">Description</th>
+      </tr></thead>
         <tbody id="dtcs"></tbody></table>
     </div>
     <div class="panel">
-      <h2>Readiness Monitors</h2>
-      <table><thead><tr><th>Monitor</th><th>Supported</th><th>Ready</th></tr></thead>
+      <h2 data-i18n="monitors.heading">Readiness Monitors</h2>
+      <table><thead><tr>
+        <th data-i18n="monitors.name">Monitor</th>
+        <th data-i18n="monitors.supported">Supported</th>
+        <th data-i18n="monitors.ready">Ready</th>
+      </tr></thead>
         <tbody id="monitors"></tbody></table>
     </div>
   </section>
@@ -198,6 +216,48 @@ async function loadSessions() {
 
 $("start").onclick = start;
 $("stop").onclick = stop;
+
+// Backup: download a ZIP of every session + the SQLite metadata
+$("backup-btn").onclick = async () => {
+  try {
+    const r = await fetch("/api/backup", { method: "POST" });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().replace(/[:T]/g, "-").slice(0, 19);
+    a.href = url;
+    a.download = `uacj-backup-${stamp}.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert(e.message); }
+};
+
+// Restore: upload a previously-saved ZIP, replacing the current data dir
+$("restore-btn").onclick = async () => {
+  const fileInput = $("restore-file");
+  if (!fileInput.files || fileInput.files.length === 0) {
+    alert("Pick a backup .zip first");
+    return;
+  }
+  const fd = new FormData();
+  fd.append("file", fileInput.files[0]);
+  try {
+    const r = await fetch("/api/restore", { method: "POST", body: fd });
+    if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    const j = await r.json();
+    alert(`Restored ${j.sessions || 0} session(s). Reload to see them.`);
+    location.reload();
+  } catch (e) { alert(e.message); }
+};
+
+// Re-render dynamic content when the language toggle fires.
+document.addEventListener("uacj:lang-changed", async () => {
+  await loadVehicles();
+  await loadSessions();
+  await loadStatic();
+});
+
 loadVehicles();
 loadSessions();
 </script>

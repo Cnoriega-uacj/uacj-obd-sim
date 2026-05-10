@@ -9,6 +9,7 @@ __pycache__/
 build/
 dist/
 data/
+docs/client-reply-precan.md
 sessions/*/
 !sessions/.gitkeep
 .DS_Store

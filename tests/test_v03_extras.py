@@ -8,7 +8,6 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from uacj_obd.acquisition import AcquisitionSession, SessionConfig
-from uacj_obd.adapters import open_adapter
 from uacj_obd.adapters.mock import MockAdapter
 from uacj_obd.api import create_app
 from uacj_obd.diff import diff_sessions

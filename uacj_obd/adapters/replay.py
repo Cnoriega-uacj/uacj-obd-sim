@@ -7,7 +7,6 @@ from typing import Iterable
 
 from uacj_obd.models import (
     DTC,
-    DTCStatus,
     FreezeFrame,
     LiveSample,
     Monitor,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import threading
@@ -9,9 +8,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+import io
+import shutil
+import tempfile
+import zipfile
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -19,7 +23,7 @@ from uacj_obd.acquisition import AcquisitionSession, SessionConfig
 from uacj_obd.adapters import open_adapter
 from uacj_obd.models import DTC, FreezeFrame, Monitor, Scenario, VehicleInfo
 from uacj_obd.pids import load_default_registry
-from uacj_obd.presets import PRESETS, apply_monitors_override, get_preset, list_presets
+from uacj_obd.presets import apply_monitors_override, get_preset, list_presets
 from uacj_obd.storage import Database, SessionStore
 
 log = logging.getLogger(__name__)
@@ -431,6 +435,78 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         state["thread"] = thread
         thread.start()
         return {"session_id": meta.session_id, "scenario_id": scenario_id}
+
+    # --- backup / restore --------------------------------------------
+
+    @app.post("/api/backup")
+    def backup() -> StreamingResponse:
+        """Stream a ZIP containing the SQLite metadata DB plus every
+        session folder. Restoring this file on another laptop reproduces
+        the entire state."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            db_path = root / "uacj.db"
+            if db_path.exists():
+                zf.write(db_path, arcname="uacj.db")
+            sessions_root = root / "sessions"
+            if sessions_root.exists():
+                for path in sessions_root.rglob("*"):
+                    if path.is_file():
+                        zf.write(path, arcname=str(path.relative_to(root)))
+            zf.writestr("BACKUP_INFO.json", json.dumps({
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "schema_version": "1",
+                "source": "uacj-obd-sim /api/backup",
+            }, indent=2))
+        buf.seek(0)
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+        headers = {"Content-Disposition": f'attachment; filename="uacj-backup-{stamp}.zip"'}
+        return StreamingResponse(buf, media_type="application/zip", headers=headers)
+
+    @app.post("/api/restore")
+    async def restore(file: UploadFile = File(...)) -> dict:
+        """Replace the current data directory with the contents of a
+        previously-saved backup ZIP. The current data is moved to a
+        timestamped backup folder (root/.restore-backup-*) before
+        the new files are written, so a bad upload is recoverable."""
+        if not file.filename or not file.filename.lower().endswith(".zip"):
+            raise HTTPException(status_code=400, detail="upload must be a .zip file")
+        raw = await file.read()
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(raw))
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(status_code=400, detail=f"not a valid zip: {exc}")
+        # Validate that this looks like one of our backups before touching disk
+        names = set(zf.namelist())
+        if "BACKUP_INFO.json" not in names:
+            raise HTTPException(status_code=400, detail="missing BACKUP_INFO.json — not a UACJ backup")
+        # Reject paths attempting to escape root (zip slip).
+        for name in names:
+            if name.startswith("/") or ".." in Path(name).parts:
+                raise HTTPException(status_code=400, detail=f"unsafe path in zip: {name}")
+        # Snapshot existing state side-aside before extracting.
+        snapshot_dir = root / f".restore-backup-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("uacj.db", "sessions"):
+            src = root / name
+            if src.exists():
+                shutil.move(str(src), str(snapshot_dir / name))
+        # Extract into root.
+        session_count = 0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            zf.extractall(tmpdir)
+            for src in Path(tmpdir).rglob("*"):
+                if not src.is_file():
+                    continue
+                rel = src.relative_to(tmpdir)
+                if str(rel) == "BACKUP_INFO.json":
+                    continue
+                dst = root / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                if rel.parts and rel.parts[0] == "sessions" and src.name == "metadata.json":
+                    session_count += 1
+        return {"restored": True, "sessions": session_count, "snapshot": str(snapshot_dir.name)}
 
     # --- static dashboard --------------------------------------------
 

@@ -1,6 +1,6 @@
 [project]
 name = "uacj-obd-sim"
-version = "0.3.0"
+version = "0.4.0"
 description = "OBD-II training simulator for UACJ — acquisition, storage, modification, and replay"
 requires-python = ">=3.11"
 authors = [{ name = "Azamat Hakimov" }]
@@ -14,6 +14,7 @@ dependencies = [
     "pyserial>=3.5",
     "click>=8.1.7",
     "rich>=13.9.0",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

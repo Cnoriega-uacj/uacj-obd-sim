@@ -24,7 +24,7 @@ def test_single_frame_round_trip() -> None:
 
 def test_multi_frame_vin_round_trip() -> None:
     """Mode 09 PID 02 VIN response is 20 bytes — needs FF + 2 CFs."""
-    vin_payload = b"\x49\x02\x01" + b"2HGFC2F59FH123456" + b"\x00"  # 21 bytes incl pad
+    b"\x49\x02\x01" + b"2HGFC2F59FH123456" + b"\x00"  # 21 bytes incl pad
     payload = b"\x49\x02\x01" + b"2HGFC2F59FH123456"  # 20 bytes
     f = IsoTpFramer(tx_id=0x7E8)
     frames = f.encode(payload)

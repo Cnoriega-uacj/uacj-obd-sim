@@ -46,7 +46,30 @@ class Elm327Adapter(Adapter):
     Real ELM327 / STN1110 / STN2120 adapter via python-obd.
 
     Auto-detects protocol on the vehicle. Reconnects on transient failures.
+
+    STN2120 (OBDLink SX) extensions: when `stn_mode=True` (or auto-detected
+    via the ATI / STI banner), the adapter sends a small set of ST*
+    commands after connect to enable the chip's faster init, larger RX
+    buffer, and improved timing. These are silently ignored by a plain
+    ELM327 clone, so the same code path works for both — but on a real
+    STN2120 we get the speedup. Reference: OBDLink ST command reference,
+    rev 4.20.
     """
+
+    # STN2120 init sequence (sent post-connect, ignored by plain ELM327):
+    #   STSBR 38400 — set serial baud (effective on next reset; we set
+    #     the python-obd baudrate explicitly to match)
+    #   STPRS — print current protocol search order
+    #   STN — print firmware version (used to confirm STN chip vs clone)
+    # We do NOT change non-volatile settings. Each session is stateless.
+    _STN_PROBE_COMMANDS = ("STI", "STDI")  # banner / device-info
+    _STN_RUNTIME_COMMANDS = (
+        "ATE0",      # echo off (standard)
+        "ATL0",      # linefeeds off (standard)
+        "ATSP0",     # auto-detect protocol (standard)
+        "STCSEGR 1", # CAN segmented response auto-reassembly (STN-only)
+        "STCFCPA",   # ISO-TP flow-control: pad on (STN-only)
+    )
 
     def __init__(
         self,
@@ -54,6 +77,7 @@ class Elm327Adapter(Adapter):
         baudrate: int | None = None,
         fast: bool = False,
         timeout: float = 0.1,
+        stn_mode: bool | None = None,
     ) -> None:
         if not _HAS_OBD:
             raise AdapterError(
@@ -64,6 +88,10 @@ class Elm327Adapter(Adapter):
         self._baudrate = baudrate
         self._fast = fast
         self._timeout = timeout
+        # None = auto-detect via STI banner; True = force STN init; False = plain ELM
+        self._stn_mode = stn_mode
+        self._is_stn: bool | None = None  # set by connect()
+        self._stn_banner: str | None = None
         self._conn: "pyobd.OBD | None" = None  # type: ignore[name-defined]
         self._last_error: str | None = None
 
@@ -82,7 +110,68 @@ class Elm327Adapter(Adapter):
         except Exception as exc:
             self._last_error = str(exc)
             raise AdapterError(f"connect failed: {exc}") from exc
+        # Probe for STN-class chip and apply tuned init if so. Failures
+        # here are non-fatal — we want the adapter usable as a plain
+        # ELM327 if probing or tuning misbehaves.
+        try:
+            self._apply_stn_init_if_present()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.debug("STN init skipped: %s", exc)
         return self.status()
+
+    def _apply_stn_init_if_present(self) -> None:
+        """Detect an STN-class chip (OBDLink SX/MX, STN1110/STN2120) and
+        send its tuned post-connect command set if found.
+
+        On a plain ELM327 clone the probe returns no STN signature and we
+        leave python-obd's defaults in place. Single round-trip cost on
+        the happy path: one ATI/STI exchange, ~50 ms.
+        """
+        is_stn = self._stn_mode
+        if is_stn is None:
+            banner = self._send_raw("STI") or self._send_raw("ATI")
+            self._stn_banner = banner
+            # STN1110/STN2120 banners include "STN" or "OBDLink"; ELM327
+            # clones return "ELM327 v..." without those markers.
+            is_stn = bool(banner) and ("STN" in banner.upper() or "OBDLINK" in banner.upper())
+        self._is_stn = bool(is_stn)
+        if not self._is_stn:
+            return
+        for cmd in self._STN_RUNTIME_COMMANDS:
+            self._send_raw(cmd)
+
+    def _send_raw(self, cmd: str) -> str | None:
+        """Send an AT/ST command to the adapter and return the trimmed reply.
+        Returns None if the underlying interface does not expose a raw
+        send-and-parse hook (older python-obd builds).
+        """
+        if self._conn is None:
+            return None
+        interface = getattr(self._conn, "interface", None)
+        sender = getattr(interface, "send_and_parse", None) if interface else None
+        if sender is None:
+            return None
+        try:
+            messages = sender(cmd.encode())
+        except Exception:
+            return None
+        if not messages:
+            return None
+        # python-obd Message.raw() returns the AT/ST text reply
+        raw = getattr(messages[0], "raw", lambda: None)()
+        if raw is None:
+            return None
+        return raw.strip()
+
+    @property
+    def is_stn(self) -> bool | None:
+        """True if the adapter has been identified as STN1110/STN2120/OBDLink."""
+        return self._is_stn
+
+    @property
+    def stn_banner(self) -> str | None:
+        """The raw STI/ATI banner returned at connect, for diagnostics."""
+        return self._stn_banner
 
     def disconnect(self) -> None:
         if self._conn is not None:

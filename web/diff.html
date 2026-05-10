@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Diff — UACJ OBD-II Simulator</title>
+<title data-i18n="app.subtitle.diff">Diff — UACJ OBD-II Simulator</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="/i18n.js"></script>
 <style>
   :root { --bg:#0e1116; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --warn:#f0883e; --bad:#f85149; --ok:#3fb950; --add:#3fb950; --rem:#f85149; }
   * { box-sizing: border-box; }
@@ -33,14 +34,14 @@
 </head>
 <body>
 <header>
-  <a href="/">← Dashboard</a>
-  <h1>Compare two sessions</h1>
+  <a href="/" data-i18n="nav.dashboard">← Dashboard</a>
+  <h1 data-i18n="diff.heading">Compare two sessions</h1>
 </header>
 <main>
   <div class="panel row">
-    <span class="meta">A:</span> <select id="sel-a"></select>
-    <span class="meta">B:</span> <select id="sel-b"></select>
-    <button class="primary" id="run">Compare</button>
+    <span class="meta" data-i18n="diff.session_a">A:</span> <select id="sel-a"></select>
+    <span class="meta" data-i18n="diff.session_b">B:</span> <select id="sel-b"></select>
+    <button class="primary" id="run" data-i18n="diff.compare">Compare</button>
   </div>
   <div id="result"></div>
 </main>

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from uacj_obd.simulator.ecu import EcuEmulator, ScenarioState
-from uacj_obd.simulator.encoders import supported_pid_bitmap
 
 
 def _ecu(**kwargs) -> EcuEmulator:

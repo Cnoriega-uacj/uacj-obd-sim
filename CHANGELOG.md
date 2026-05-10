@@ -1,5 +1,142 @@
 # Changelog
 
+## 0.4.0 — 2026-04-29
+
+Pre-hardware-arrival hardening pass. The OBDLink SX, Pi 4, MCP2515,
+and L9637D have been ordered but not yet delivered. Everything below
+was built and validated without that hardware on hand, against
+virtual buses and unit tests, so the day the parts arrive the
+remaining work is wiring + bring-up rather than fresh code.
+
+### J1850 framing for pre-CAN GM/Ford (no transceiver yet)
+- `simulator/j1850.py` — SAE J1850 frame layout, CRC-8 (poly 0x1D,
+  init 0xFF, xor-out 0xFF), encode/decode, 7-byte payload limit, and
+  segmented response packing for VIN-style multi-frame replies.
+- `simulator/j1850_runtime.py` — duck-typed transceiver wrapper that
+  reads complete frames, dispatches through `EcuEmulator`, and writes
+  responses back. Same hardware-free pattern as `kline_runtime.py`.
+- 15 unit tests covering CRC, framing, NRC paths, and round-trip
+  RPM / VIN / DTC / clear-codes via the runtime.
+- The MC33390 (or equivalent VPW transceiver) is **still not in the
+  v1 BOM** — see `docs/compatibility.md` and `docs/client-reply-precan.md`
+  for the BOM-clarification thread with Cristopher.
+
+### STN2120 (OBDLink SX) tuning path
+- `Elm327Adapter` now probes the chip's ATI/STI banner at connect.
+  When an STN-class chip (STN1110, STN2120, OBDLink SX/MX) is
+  detected, the adapter sends ST-prefixed init commands (segmented-
+  response auto-reassembly, ISO-TP flow-control padding) that a plain
+  ELM327 clone silently ignores. `stn_mode=True/False` overrides the
+  banner detection.
+- 5 tests with a fake `pyobd` object verifying STN init runs only
+  when expected — no real adapter required.
+
+### Virtual-bus bench harness
+- `scripts/bench.py` — round-trips RPM / VIN / DTC / clear-codes
+  through:
+    - python-can virtual bus (CAN, ISO-TP)
+    - `os.openpty()` raw-mode pty pair (K-Line, KWP2000)
+    - in-memory pipe (J1850)
+- Runs in CI as a regression gate via `tests/test_bench.py`. This is
+  the closest we can get to integration testing without the hardware.
+
+### Honda PID coverage expanded
+- Cristopher noted Honda is the most-frequent classroom case at UACJ,
+  so `manufacturer_starter.yaml` and `simulator/encoders.py` gained
+  five new Honda mode 0x22 PIDs: VTEC oil pressure, brake pedal
+  switch, target idle, knock retard, fuel rail pressure.
+- 8 tests, including encode → decode round-trip via the YAML registry.
+
+### Documentation
+- `docs/install.md` — complete TeamViewer-day install runbook,
+  paste-and-go from SD-card flash through scan-tool smoke test, with
+  troubleshooting table.
+- `docs/compatibility.md` — predicted compatibility for 13 common
+  scan tools, replacing the "❓" placeholders with reasoned forecasts
+  (marked 🔮 to distinguish from verified ✅).
+- `docs/client-reply-precan.md` — the BOM-clarification draft sent
+  to Cristopher about the optional pre-CAN add-on.
+
+### Engineering
+- GitHub Actions CI workflow (`.github/workflows/ci.yml`): pytest +
+  ruff on Python 3.11 and 3.12, every push and PR to main.
+- Ruff-clean across the whole repo (29 → 0 issues).
+- Test count: 63 → 118, all passing.
+
+### Pre-arrival classroom polish (added 2026-05-01)
+
+While the hardware ships, this set ensures the laptop and class flow
+work the moment the parts land — no install-day code surprises.
+
+#### Mode 0x06 — on-board monitoring test results
+- `EcuEmulator._mode06` answers SAE J1979 mode 0x06 with packed test
+  records (TID, CID, UASID, value, min, max). Bare `0x06` enumerates
+  every configured test; specific TID returns just that test or the
+  "no data" service-byte-only reply for unknown TIDs.
+- `ScenarioState.obd_test_results` carries `{tid: (cid, value, min, max)}`
+  per scenario; `scenario_to_state()` accepts both list and dict
+  payload shapes.
+- 5 tests including the bare-request enumeration path and the
+  no-data-yet behaviour that matches real CARB compliance testers.
+
+#### Extended manufacturer PID library
+- 18 new mode 0x22 PIDs across Ford (5), GM (5), Toyota (4), Nissan (3)
+  alongside the existing Honda 6.
+- `select_make()` opt-in encoder banks (`default`, `nissan`, `toyota`)
+  cleanly resolve key collisions where two makes use the same PID
+  number — instructors switch via one call, no YAML hot-swap.
+- 14 round-trip + bank-switching tests.
+
+#### Five pre-loaded sample sessions
+- `scripts/seed_sample_sessions.py` writes a Civic / Silverado /
+  Corolla / F-150 / Sentra session to disk so the dashboard isn't
+  empty on first boot. Each has 60 seconds of synthetic-but-plausible
+  live data; all are flagged in `metadata.notes` as `synthetic sample`.
+  Idempotent — re-running overwrites the same session IDs.
+- 2 tests (creates 5 sessions, idempotent re-run).
+
+#### Spanish/English UI toggle
+- `web/i18n.js` — auto-detects browser language (es-MX → Spanish),
+  injects an EN/ES toggle button into every page header, persists
+  the choice in `localStorage`, and broadcasts a `uacj:lang-changed`
+  event so dashboard JS can re-render dynamic content.
+- All five HTML pages (`index`, `scenarios`, `classroom`, `diff`,
+  `session`) now carry `data-i18n` annotations on their static labels.
+
+#### Backup / restore
+- `POST /api/backup` streams a single ZIP containing `uacj.db` +
+  every session folder + a `BACKUP_INFO.json` schema marker.
+- `POST /api/restore` validates the ZIP shape, rejects zip-slip
+  attacks, snapshots the existing data dir as `.restore-backup-*`
+  before overwriting, then extracts.
+- Dashboard left-rail buttons wire the round trip end-to-end.
+- 5 tests including round-trip, malformed zip rejection, and
+  zip-slip path rejection.
+
+#### Wiring guide expansion
+- `docs/wiring.md` now includes both pre-CAN add-ons end-to-end:
+  - GM J1850 VPW DIY transceiver (LM358 + 2N7000 × 2 + R/C kit, ~$10)
+  - Ford J1850 PWM (AM26LS31 driver + AM26LS32 receiver + 120 Ω
+    terminator, ~$15)
+- Each add-on includes pin-by-pin wiring tables, an ASCII schematic,
+  bench-test commands, and a "common gotchas" list (5V vs 7V VPW,
+  termination resistor placement, MOSFET orientation, dual-UART
+  conflict resolution).
+
+#### Laptop installer bundle
+- `installer/start_uacj.bat` (Windows) / `start_uacj.sh` (Mac/Linux):
+  one-click launchers that create the venv, install the package,
+  seed the sample sessions, and open the browser to the dashboard
+  on first run.
+- `scripts/build_installer_zip.py` packages the source + launchers
+  + docs into `dist/uacj-obd-sim-installer-v{version}.zip`.
+
+#### Instructor quick-start
+- `docs/instructor_quickstart.md` (English) and
+  `docs/instructor_quickstart_es.md` (Spanish) — single-page cheat
+  sheets sized for A4/Letter, designed so a substitute teacher can
+  run a class with just the printout.
+
 ## 0.3.0 — 2026-04-27
 
 Three additions, all reviewed for legal risk before implementation

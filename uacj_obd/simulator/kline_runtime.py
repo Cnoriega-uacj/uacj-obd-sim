@@ -16,7 +16,6 @@ from .kline import (
     KEY_BYTE_2,
     SLOW_INIT_ADDRESS_OBD,
     KlineError,
-    KwpFrame,
     decode,
     encode_response,
     slow_init_step,

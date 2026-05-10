@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-from typing import Iterable
 
 from .ecu import EcuEmulator
 from .iso_tp import CanFrame, IsoTpError, IsoTpFramer
@@ -131,6 +129,19 @@ def scenario_to_state(scenario_payload: dict, source_session: dict | None = None
         freeze_frame=(scenario_payload.get("freeze_frame") or {}).get("pids", {}),
         freeze_dtc=(scenario_payload.get("freeze_frame") or {}).get("dtc"),
     )
+    raw_tests = scenario_payload.get("obd_test_results") or {}
+    if raw_tests:
+        # Accept {tid_hex_or_int: [cid, val, min, max]} or {...: {...}} from JSON.
+        normalized: dict[int, tuple[int, int, int, int]] = {}
+        for k, entry in raw_tests.items():
+            tid = int(k, 16) if isinstance(k, str) else int(k)
+            if isinstance(entry, dict):
+                vals = (entry["cid"], entry["value"], entry["min"], entry["max"])
+            else:
+                vals = tuple(entry)  # type: ignore[assignment]
+            normalized[tid] = (int(vals[0]), int(vals[1]), int(vals[2]), int(vals[3]))
+        state.obd_test_results = normalized
+
     monitors = scenario_payload.get("monitors") or []
     if monitors:
         # encode supported & ready bits (mode 01 PID 01 byte B)

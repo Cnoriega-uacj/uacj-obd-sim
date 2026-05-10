@@ -12,7 +12,6 @@ from uacj_obd.simulator.kline import (
     TESTER_ADDRESS,
     decode,
     encode_request,
-    encode_response,
     total_frame_length,
 )
 from uacj_obd.simulator.kline_runtime import KlineRuntime

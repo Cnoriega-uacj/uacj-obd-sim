@@ -7,7 +7,6 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 from uacj_obd.adapters import Adapter, AdapterError, ConnectionState
 from uacj_obd.models import (

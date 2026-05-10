@@ -23,10 +23,8 @@ from __future__ import annotations
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
 
 from .encoders import (
-    encodable_mfg_pids,
     encodable_pids,
     encode_mfg_pid,
     encode_pid,
@@ -95,6 +93,10 @@ class ScenarioState:
     monitor_d: int = 0x00
     freeze_frame: dict[str, float | int | str] = field(default_factory=dict)
     freeze_dtc: str | None = None
+    # Mode 0x06 on-board monitoring test results.
+    # Map of test_id (int) → (component_id, value, min, max).
+    # Values are in raw 16-bit units; the dispatch packs them per SAE J1979 mode 0x06.
+    obd_test_results: dict[int, tuple[int, int, int, int]] = field(default_factory=dict)
 
     def supported_pid_keys(self) -> set[str]:
         """All PIDs we can answer mode 0x01 for, given the live data."""
@@ -119,6 +121,7 @@ def _negative(service: int, nrc: int) -> bytes:
 _SERVICE_NAMES = {
     0x01: "current data", 0x02: "freeze frame",
     0x03: "stored DTCs", 0x04: "clear DTCs",
+    0x06: "OBD monitoring test results",
     0x07: "pending DTCs", 0x09: "vehicle info",
     0x0A: "permanent DTCs", 0x22: "mfg PID",
 }
@@ -177,14 +180,24 @@ class EcuEmulator:
         return response
 
     def _dispatch(self, service: int, request: bytes) -> bytes | None:
-        if service == 0x01: return self._mode01(request[1:])
-        if service == 0x02: return self._mode02(request[1:])
-        if service == 0x03: return self._mode03()
-        if service == 0x04: return self._mode04()
-        if service == 0x07: return self._mode07()
-        if service == 0x09: return self._mode09(request[1:])
-        if service == 0x0A: return self._mode0A()
-        if service == 0x22: return self._mode22(request[1:])
+        if service == 0x01:
+            return self._mode01(request[1:])
+        if service == 0x02:
+            return self._mode02(request[1:])
+        if service == 0x03:
+            return self._mode03()
+        if service == 0x04:
+            return self._mode04()
+        if service == 0x06:
+            return self._mode06(request[1:])
+        if service == 0x07:
+            return self._mode07()
+        if service == 0x09:
+            return self._mode09(request[1:])
+        if service == 0x0A:
+            return self._mode0A()
+        if service == 0x22:
+            return self._mode22(request[1:])
         return None
 
     def _log_interaction(self, request: bytes, response: bytes) -> None:
@@ -285,6 +298,51 @@ class EcuEmulator:
 
     def _mode0A(self) -> bytes:
         return bytes([0x4A]) + _pack_dtc_list(self.state.dtcs_permanent)
+
+    def _mode06(self, args: bytes) -> bytes:
+        """
+        Mode 0x06 — on-board monitoring test results (CAN ECUs after 2002).
+
+        Request layout per SAE J1979:
+          0x06 TID                 — return all components for this test ID
+          0x06                     — return all configured tests (some tools
+                                      send a bare 0x06 to enumerate)
+
+        Response layout:
+          0x46 [TID CID UASID Value(2) Min(2) Max(2)]*
+
+        UASID (Unit and Scaling ID) is fixed to 0x00 for the simulator —
+        scan tools that don't honour UASID will still display the raw 16-bit
+        Value and bracket. Test IDs are scenario-defined; if the scenario
+        provides no results, we answer with an empty result set rather than
+        an NRC, mirroring vehicles where mode 06 is supported but the
+        monitor hasn't completed yet.
+        """
+        results = self.state.obd_test_results
+        if args:
+            tid = args[0]
+            entry = results.get(tid)
+            if entry is None:
+                # No data for this TID — vehicles typically respond with the
+                # service byte alone, indicating "supported but no data".
+                return bytes([0x46])
+            cid, value, mn, mx = entry
+            return bytes([
+                0x46, tid, cid & 0xFF, 0x00,
+                (value >> 8) & 0xFF, value & 0xFF,
+                (mn >> 8) & 0xFF, mn & 0xFF,
+                (mx >> 8) & 0xFF, mx & 0xFF,
+            ])
+        # Bare 0x06 → enumerate every configured test.
+        out = bytearray([0x46])
+        for tid, (cid, value, mn, mx) in sorted(results.items()):
+            out.extend([
+                tid & 0xFF, cid & 0xFF, 0x00,
+                (value >> 8) & 0xFF, value & 0xFF,
+                (mn >> 8) & 0xFF, mn & 0xFF,
+                (mx >> 8) & 0xFF, mx & 0xFF,
+            ])
+        return bytes(out)
 
     def _mode22(self, args: bytes) -> bytes:
         """Manufacturer-specific PID read (16-bit PID, ISO 14229 service 0x22)."""

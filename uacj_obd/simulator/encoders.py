@@ -185,21 +185,172 @@ def _enc_honda_atf_temp(c: float) -> bytes:
     return bytes([_u8(c + 40)])
 
 
+def _enc_honda_vtec_oil_press(kpa: float) -> bytes:
+    raw = max(0, min(65535, int(round(kpa * 10))))
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_honda_brake_switch(value: float | int | str) -> bytes:
+    try:
+        b = 1 if int(value) else 0
+    except (TypeError, ValueError):
+        b = 1 if str(value).lower() in ("on", "true", "pressed") else 0
+    return bytes([b])
+
+
+def _enc_honda_target_idle(rpm: float) -> bytes:
+    raw = _u16(rpm)
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_honda_knock_retard(deg: float) -> bytes:
+    # Inverse of formula b[0] * 0.5 - 64 → b[0] = (deg + 64) * 2
+    return bytes([_u8((deg + 64) * 2)])
+
+
+def _enc_honda_fuel_pressure(kpa: float) -> bytes:
+    raw = _u16(kpa)
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_pct_byte(pct: float) -> bytes:
+    return bytes([_u8(pct * 255 / 100)])
+
+
+def _enc_bool_byte(value: float | int | str) -> bytes:
+    try:
+        b = 1 if int(value) else 0
+    except (TypeError, ValueError):
+        b = 1 if str(value).lower() in ("on", "true", "yes") else 0
+    return bytes([b])
+
+
+def _enc_temp_offset40(c: float) -> bytes:
+    return bytes([_u8(c + 40)])
+
+
+def _enc_byte_passthrough(v: float) -> bytes:
+    return bytes([_u8(v)])
+
+
+def _enc_u16_be(v: float, scale: float = 1.0) -> bytes:
+    raw = max(0, min(65535, int(round(v * scale))))
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+# Ford
+def _enc_ford_ac_compressor(value): return _enc_bool_byte(value)
+def _enc_ford_fuel_pump_duty(pct): return _enc_pct_byte(pct)
+def _enc_ford_gear(g): return _enc_byte_passthrough(g)
+
+
+# GM
+def _enc_gm_fuel_tank_pressure(pa: float) -> bytes:
+    # Inverse of (b[0]*256 + b[1]) * 0.25 - 8192 → raw = (pa + 8192) / 0.25
+    raw = max(0, min(65535, int(round((pa + 8192) / 0.25))))
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_gm_gear(g): return _enc_byte_passthrough(g)
+def _enc_gm_baro(kpa): return _enc_byte_passthrough(kpa)
+
+
+# Toyota
+def _enc_toyota_hybrid_soc(pct): return _enc_pct_byte(pct)
+def _enc_toyota_inverter_temp(c): return _enc_temp_offset40(c)
+def _enc_toyota_accel_pedal(pct): return _enc_pct_byte(pct)
+
+
+# Nissan
+def _enc_nissan_cvt_ratio(ratio): return _enc_u16_be(ratio, 1000.0)
+def _enc_nissan_cvt_temp(c): return _enc_temp_offset40(c)
+def _enc_nissan_target_afr(lam): return _enc_u16_be(lam, 10000.0)
+
+
+# Encoders for the merged default registry. Where two makes share a key,
+# the encoder corresponds to the YAML entry that loads last (alphabetical
+# file order). Per-make Nissan PIDs at colliding keys are unreachable in
+# the default registry — load `manufacturer_nissan.yaml` into a fresh
+# PidRegistry() to swap them in.
 _MFG_ENCODERS: dict[str, Callable[..., bytes]] = {
+    # Ford
     "22115C": _enc_ford_trans_oil_temp,
-    "221101": _enc_ford_key_on_runtime,
+    "221101": _enc_ford_key_on_runtime,        # collides with Nissan CVT ratio
+    "221108": _enc_ford_ac_compressor,
+    "221156": _enc_ford_fuel_pump_duty,        # collides with Nissan target AFR
+    "221157": _enc_ford_gear,
+    # GM
     "220005": _enc_gm_oil_life,
     "22115A": _enc_gm_trans_fluid_temp,
+    "22000C": _enc_gm_fuel_tank_pressure,
+    "22115B": _enc_gm_gear,
+    "22100C": _enc_gm_baro,
+    # Toyota
     "220101": _enc_toyota_engine_runtime,
+    "220102": _enc_toyota_hybrid_soc,
+    "220103": _enc_toyota_inverter_temp,
+    # Honda — primary UACJ fleet
     "22015C": _enc_honda_atf_temp,
+    "220144": _enc_honda_vtec_oil_press,
+    "220123": _enc_honda_brake_switch,
+    "22012F": _enc_honda_target_idle,
+    "220156": _enc_honda_knock_retard,
+    "22011A": _enc_honda_fuel_pressure,
+    # Nissan — only the non-colliding key in the default merged registry
+    "221102": _enc_nissan_cvt_temp,
 }
 
 
+# Per-make encoder banks for opt-in classroom profiles. Use:
+#   from uacj_obd.simulator.encoders import select_make
+#   select_make("nissan")
+# to switch the simulator to Nissan-only PID handling for a session.
+_NISSAN_ENCODERS: dict[str, Callable[..., bytes]] = {
+    "221101": _enc_nissan_cvt_ratio,
+    "221102": _enc_nissan_cvt_temp,
+    "221156": _enc_nissan_target_afr,
+}
+
+
+_TOYOTA_ENCODERS: dict[str, Callable[..., bytes]] = {
+    "220101": _enc_toyota_engine_runtime,
+    "220102": _enc_toyota_hybrid_soc,
+    "220103": _enc_toyota_inverter_temp,
+    "220156": _enc_toyota_accel_pedal,  # collides with Honda knock retard
+}
+
+
+_MAKE_BANKS = {
+    "default": _MFG_ENCODERS,
+    "nissan": {**_MFG_ENCODERS, **_NISSAN_ENCODERS},
+    "toyota": {**_MFG_ENCODERS, **_TOYOTA_ENCODERS},
+}
+
+
+_active_make = "default"
+
+
+def select_make(make: str) -> None:
+    """Swap the active mfg-PID encoder bank. `make` is matched
+    case-insensitively against keys of `_MAKE_BANKS`. Falls back to
+    'default' for unknown makes."""
+    global _active_make
+    key = (make or "default").lower()
+    _active_make = key if key in _MAKE_BANKS else "default"
+
+
+def active_make() -> str:
+    return _active_make
+
+
 def encode_mfg_pid(pid_key: str, value: float | int | str | None) -> bytes | None:
-    """Encode a mode 0x22 manufacturer PID's value to response bytes."""
+    """Encode a mode 0x22 manufacturer PID's value to response bytes,
+    using the currently-selected make bank (default = mixed Ford/GM/
+    Toyota/Honda)."""
     if value is None:
         return None
-    enc = _MFG_ENCODERS.get(pid_key.upper())
+    bank = _MAKE_BANKS[_active_make]
+    enc = bank.get(pid_key.upper())
     if enc is None:
         return None
     try:
@@ -209,4 +360,4 @@ def encode_mfg_pid(pid_key: str, value: float | int | str | None) -> bytes | Non
 
 
 def encodable_mfg_pids() -> set[str]:
-    return set(_MFG_ENCODERS.keys())
+    return set(_MAKE_BANKS[_active_make].keys())

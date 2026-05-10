@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from uacj_obd.api import create_app
-from uacj_obd.presets import PRESETS, apply_monitors_override, get_preset, list_presets
+from uacj_obd.presets import apply_monitors_override, list_presets
 from uacj_obd.simulator import EcuEmulator, ScenarioState
 from uacj_obd.simulator.encoders import encode_mfg_pid
 

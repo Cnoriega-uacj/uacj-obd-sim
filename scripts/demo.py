@@ -63,7 +63,9 @@ def main() -> int:
     step(2, "Verify saved DTCs and monitors")
     dtcs = json.loads((folder / "dtcs.json").read_text())
     table = Table(show_header=True, header_style="bold")
-    table.add_column("Code"); table.add_column("Status"); table.add_column("Description")
+    table.add_column("Code")
+    table.add_column("Status")
+    table.add_column("Description")
     for d in dtcs:
         table.add_row(d["code"], d["status"], d["description"])
     console.print(table)
