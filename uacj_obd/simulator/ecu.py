@@ -225,9 +225,21 @@ class EcuEmulator:
             return bytes([0x41, pid]) + bitmap
 
         if pid == 0x01:
-            # Monitor status: 4 bytes A B C D
+            # Monitor status: 4 bytes A B C D per SAE J1979.
+            # Byte A is fully derived from current state: bit 7 = MIL on if
+            # any stored DTC exists; bits 0-6 = stored DTC count (saturating
+            # at 0x7F). Any `monitor_status` value on the scenario is
+            # ignored — scenarios that try to set "MIL off, 0 DTCs" while
+            # also storing a DTC produced an inconsistency that some
+            # scan tools (e.g. Innova 5210) detected by refusing to render
+            # the readiness page. Bytes B/C/D continue to come from the
+            # scenario (the available/complete bits for the continuous and
+            # non-continuous monitors).
+            stored_count = min(len(self.state.dtcs_stored), 0x7F)
+            mil_on = 0x80 if self.state.dtcs_stored else 0x00
+            byte_a = mil_on | stored_count
             return bytes([0x41, 0x01,
-                            self.state.monitor_status & 0xFF,
+                            byte_a,
                             self.state.monitor_b & 0xFF,
                             self.state.monitor_c & 0xFF,
                             self.state.monitor_d & 0xFF])

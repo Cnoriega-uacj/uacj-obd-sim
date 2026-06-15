@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.2 — 2026-06-15
+
+Tiny bug fix discovered immediately after v0.4.1 during the same on-site
+install. The Innova 5210 displayed VIN, DTC, and live data correctly but
+refused to render the I/M Monitor readiness page once a stored DTC was
+loaded. Root cause: Mode 01 PID 01's byte A (MIL state + stored DTC
+count) was being returned verbatim from `ScenarioState.monitor_status`,
+which defaults to 0x00 (no MIL, no DTCs). When a scenario also loaded a
+stored DTC, the scan tool saw an inconsistency — Mode 03 returned one
+DTC but byte A claimed zero — and refused to render readiness.
+
+Fix in `EcuEmulator._mode01`: byte A is now derived dynamically from
+`self.state.dtcs_stored` on every Mode 01 PID 01 dispatch. Bit 7 = 1 if
+any stored DTC exists; bits 0-6 = stored DTC count (saturating at
+0x7F). Bytes B/C/D continue to come from `ScenarioState` (the monitor
+availability/completeness bitmaps that scenarios populate via the
+`monitors[]` array). Pending DTCs do not turn the MIL on, per SAE J1979.
+
+Added 5 focused tests in `tests/test_ecu.py` covering the derivation
+(no DTCs, one stored DTC, count saturation, pending-only, and
+preservation of bytes B/C/D from scenario state). All 123 tests pass.
+
+Confirmed on site: Innova 5210 rendered the readiness page correctly
+immediately after the simulator service was restarted with the patch.
+
 ## 0.4.1 — 2026-06-15
 
 Docs-only patch following the UACJ on-site bring-up. No code change.

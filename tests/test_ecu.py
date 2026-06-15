@@ -40,6 +40,48 @@ def test_mode01_unsupported_pid_returns_nrc() -> None:
     assert resp[1] == 0x01
 
 
+def test_mode01_pid01_byte_a_no_dtcs() -> None:
+    ecu = _ecu()
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    # bit 7 = MIL off, bits 0-6 = 0 DTCs
+    assert resp[:2] == bytes([0x41, 0x01])
+    assert resp[2] == 0x00
+
+
+def test_mode01_pid01_byte_a_one_stored_dtc_turns_mil_on() -> None:
+    ecu = _ecu(dtcs_stored=["P0420"])
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    # bit 7 set (MIL on) | 1 DTC
+    assert resp[2] == 0x81
+
+
+def test_mode01_pid01_byte_a_dtc_count_saturates_at_127() -> None:
+    ecu = _ecu(dtcs_stored=[f"P{n:04X}" for n in range(200)])
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    assert resp[2] == 0xFF  # MIL on + 127
+
+
+def test_mode01_pid01_byte_a_pending_only_does_not_turn_mil_on() -> None:
+    # Per SAE J1979, MIL only illuminates for stored (confirmed) DTCs.
+    ecu = _ecu(dtcs_pending=["P0171"])
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    assert resp[2] == 0x00
+
+
+def test_mode01_pid01_bytes_bcd_come_from_scenario_state() -> None:
+    ecu = _ecu(
+        dtcs_stored=["P0420"],
+        monitor_b=0x07,
+        monitor_c=0xE7,
+        monitor_d=0x01,
+    )
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    assert resp[2] == 0x81  # byte A derived (MIL on, 1 DTC)
+    assert resp[3] == 0x07
+    assert resp[4] == 0xE7
+    assert resp[5] == 0x01
+
+
 def test_mode03_returns_packed_dtcs() -> None:
     ecu = _ecu(dtcs_stored=["P0420", "P0171"])
     resp = ecu.handle(bytes([0x03]))
