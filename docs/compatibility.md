@@ -48,6 +48,26 @@ slow-init, J1850 framing ✅ but transmitter chip not yet in BOM).
 
 ---
 
+## Verified tools
+
+| Tool (firmware) | Protocols | Result | Notes |
+|---|---|---|---|
+| Innova 5210 | CAN | ✅ Verified working — six-step methodology passes once the 120 Ω OBD-end terminator is in place. The 5210 does **not** carry its own terminator; without the external 120 Ω resistor across pins 6 ↔ 14, AUTO-LINK stalls and `candump can0` floods with `000 [0]` error frames. Once terminated, the tool reports "Linked to CAN" within ~3 s and reads VIN, I/M monitor status, and Mode 03 DTCs correctly. Tested 2026-06-15 on the UACJ install. | This is a strong signal for all consumer Innova / Autel / generic ELM327 tools: assume they do **not** ship their own terminator, and always wire the 120 Ω externally per `docs/wiring.md` Connection 3.5. |
+
+---
+
+## Board-side prerequisites for tool testing
+
+Before evaluating any new scan tool, confirm:
+
+1. **120 Ω terminator across OBD pins 6 ↔ 14 is wired** at the connector body. Multimeter check: ~60 Ω resistance between pins 6 and 14 (Pi off, no tool plugged in). ~120 Ω means the external terminator is missing — most consumer tools will fail in that state, and the failure looks like the tool's problem when it isn't.
+2. **Pi-side CAN healthy:** `sudo ip -details link show can0` reports `state UP`, `bitrate 500000`, and `can state ERROR-ACTIVE`.
+3. **12 V on OBD pin 16**, GND on pins 4 and 5 (some tools refuse to power up without it; battery-powered tools may signal weak under low supply voltage).
+
+If any of these is missing, the tool will appear broken when it isn't — investigate the board side first.
+
+---
+
 ## Known limitations of the v0.x simulator (apply to all tools)
 
 These are board-side, not tool-side:
@@ -108,3 +128,6 @@ electrical path (transceiver, termination, bus voltage).
 
 - **2026-04-27** — initial template, no entries verified yet (hardware
   not yet in hand).
+- **2026-06-15** — Innova 5210 verified on the UACJ install. Added
+  the board-side prerequisites section after the install surfaced a
+  missing-terminator scenario that mimicked a tool incompatibility.

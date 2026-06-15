@@ -16,7 +16,8 @@
     - L9637D chip (the small black 8-leg chip)
     - OBD-II 16-pin female pigtail (the black coiled cable with the trapezoid plug)
     - Pack of dupont jumper wires (the rainbow ones)
-    - 470 Ω resistor (yellow-purple-brown bands)
+    - 470 Ω resistor (yellow-purple-brown bands) — for the K-Line side
+    - **120 Ω resistor (brown-red-brown bands) — for the CAN bus terminator at the OBD-II end**
     - LM2596 buck converter (the small blue rectangle with screw terminals)
 
 ---
@@ -182,6 +183,43 @@ on the other.
 > connecting the Pi.
 
 **📸 Take a photo showing the OBD-II pigtail wired to everything, and a separate close-up of the buck converter's screw terminals, and send both.**
+
+---
+
+## Connection 3.5: CAN bus terminator (the 120 Ω resistor at the OBD plug)
+
+> **Don't skip this step, even if you don't think you need it.** Most consumer scan tools — Innova 5210, Autel AL319, generic ELM327 clones — do **not** carry their own 120 Ω terminator inside. They assume the car's wiring provides it. Without this resistor, the bus is under-terminated and you will spend hours chasing phantom error frames (we know — we did, on the May 2026 install). 2 minutes now saves 4 hours later.
+
+The CAN bus needs **two** 120 Ω terminators, one at each end, like the two drains in a garden hose. The MCP2515 module already has one built in. The 120 Ω resistor you have here adds the **second** one at the OBD-II connector end.
+
+**Where it goes:** the resistor sits like a single ladder rung between the **CAN-H** wire (going to OBD pin 6) and the **CAN-L** wire (going to OBD pin 14), placed **close to the OBD-II plug** (within ~2-3 cm of the connector body, not at the MCP2515 end of the cable).
+
+```
+   OBD-II plug end                                         MCP2515 module end
+   pin 6 (CAN-H) ●═══════════════════════════════════════════●  CANH terminal
+                  ┃                                              ┃
+                  ┃ ← 120 Ω resistor bridges                     ┃
+                  ┃   the two wires HERE                         ┃
+                  ┃   (near the OBD plug)                        ┃
+                  ┃                                              ┃
+   pin 14 (CAN-L) ●═══════════════════════════════════════════●  CANL terminal
+```
+
+**Installation — no-solder method** (works fine for the first build; can be soldered later for permanence):
+
+1. About 2 cm from the back of the OBD-II plug, find the CAN-H wire (the one going to pin 6 — check your pigtail's color code; on cheap pigtails it is often red or green) and the CAN-L wire (going to pin 14 — often yellow or brown).
+2. Strip ~5 mm of plastic insulation off each wire to expose the bare copper.
+3. Wrap one leg of the 120 Ω resistor tightly around the bare copper of the CAN-H wire.
+4. Wrap the other leg tightly around the bare copper of the CAN-L wire.
+5. Squeeze each connection with pliers if you can — the tighter the better.
+6. Wrap each connection in electrical tape so the bare copper cannot touch anything else (especially the other resistor leg or any nearby wire).
+7. **Critical:** do NOT cut the CAN-H or CAN-L wires. They continue uninterrupted to the MCP2515 screw terminals. The resistor only ADDS a bridge between them at the OBD end.
+
+> **Common mistake to avoid:** do not put one leg of the resistor at the OBD plug and the other leg at the MCP2515 module. That would put the resistor "in series" with the bus and the chip would never see a signal. Both legs of the resistor must be at the SAME location (the OBD end), connecting CAN-H to CAN-L there.
+
+**Verify with a multimeter (Pi powered off, no scan tool plugged in):** measure resistance between OBD-II pin 6 and pin 14. Expected: **~60 Ω** (two 120 Ω resistors in parallel — one on the MCP2515 module, one you just added). ~120 Ω means only one terminator is wired (you may have skipped this step or the MCP2515's onboard terminator is off); ~40 Ω or less means a short or wrong resistor value.
+
+**📸 Take a close-up photo BEFORE you tape it up, showing the bare copper connections clearly, and send it for confirmation.**
 
 ---
 

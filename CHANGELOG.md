@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.4.1 — 2026-06-15
+
+Docs-only patch following the UACJ on-site bring-up. No code change.
+
+### Documented: external 120 Ω CAN terminator is required at the OBD-II connector
+
+During the on-site install with the Innova 5210 scan tool, the bus failed to
+exchange OBD-II frames despite the Pi-side CAN stack being healthy
+(`ERROR-ACTIVE`, correct 500 kbps timing, MCP2515 driver loaded). `candump can0`
+showed a continuous flood of `can0  000  [0]` error frames whenever the scan
+tool was plugged in, and went silent the moment it was unplugged.
+
+Root cause: most consumer OBD-II scan tools (Innova 5210, Autel AL319, generic
+ELM327 clones) do not carry their own 120 Ω terminator — they assume the car's
+wiring provides the second terminator at the gateway/ECM end. Our v0.4.0 wiring
+guide implicitly assumed the same, which left the OBD-II end of our pigtail
+under-terminated. Signal reflections off the unterminated end caused the
+MCP2515 to see continuous bit-level corruption, surfaced by SocketCAN as error
+frames with ID 0 and zero payload.
+
+Fix: add a 120 Ω resistor (1/4 W, 1% metal film, brown-red-brown) between OBD-II
+pin 6 (CAN-H) and pin 14 (CAN-L), wired right at the connector body — not at
+the MCP2515 end of the cable. Confirmed on-site: the Innova 5210 reported
+"Linked to CAN" within seconds of installing the terminator, and Mode 01 / 03 /
+09 traffic flowed correctly between scan tool and simulator.
+
+### Documentation changes
+
+- **`docs/wiring.md`** — added 120 Ω resistor to the BOM (now part 7), updated
+  Connection 1's termination note to call out the OBD-end requirement
+  explicitly, added explicit terminator row to Connection 3, and documented a
+  multimeter sanity check (~60 Ω across pins 6 ↔ 14 means both terminators are
+  in place).
+- **`docs/wiring_walkthrough.md`** — added 120 Ω resistor to parts list, added a
+  new "Connection 3.5: CAN bus terminator" section with no-solder install steps,
+  ladder-rung topology diagram, and the common "in series instead of in
+  parallel" mistake to avoid.
+- **`docs/install.md`** — added three new troubleshooting entries: the
+  `000 [0]` error-frame flood (→ missing terminator), non-standard IDs at the
+  wrong bitrate (→ bitrate or crystal mismatch), and `BUS-OFF` /
+  `ERROR-PASSIVE` recovery (`ip link set can0 down` + `up` with `restart-ms`).
+
 ## 0.4.0 — 2026-04-29
 
 Pre-hardware-arrival hardening pass. The OBDLink SX, Pi 4, MCP2515,

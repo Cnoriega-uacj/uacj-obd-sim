@@ -14,7 +14,8 @@ A 10–15 minute assembly. No soldering required if you use the dupont jumper ki
 | 4 | L9637D K-Line transceiver IC + 470Ω pull-up | K-Line responder | DIP-8 package |
 | 5 | OBD-II 16-pin female connector with breakout | Student-facing port | Look for "OBD-II female to dupont" pre-wired |
 | 6 | 12V → 5V buck converter (2A) | Power the Pi from the OBD-II port pin 16 | LM2596 module is fine |
-| 7 | Project enclosure | Mounts everything | Any 100×80×40mm box |
+| 7 | **120 Ω resistor (1/4 W, 1% metal film)** | **CAN bus termination at the OBD-II connector** | **Required.** Most consumer scan tools (Innova, Autel) do not provide their own terminator. Brown-red-brown bands. |
+| 8 | Project enclosure | Mounts everything | Any 100×80×40mm box |
 
 ---
 
@@ -57,7 +58,9 @@ Then the **MCP2515 module's CAN side** has two screw terminals labeled `CANH` an
 | CANH | pin 6 |
 | CANL | pin 14 |
 
-A 120Ω termination resistor between CANH and CANL is already on most MCP2515 modules — confirm with a multimeter (R between H and L should read ~60Ω if both ends are terminated, ~120Ω with just one). The student's scan tool will provide the second terminator.
+A 120 Ω termination resistor between CANH and CANL is already on most MCP2515 modules (one end of the bus is terminated). **The OBD-II side also needs its own 120 Ω terminator** — see Connection 3 below for placement. With both ends terminated the multimeter reads ~60 Ω across pins 6 ↔ 14; with only the MCP2515 side it reads ~120 Ω.
+
+> **Why an external terminator is required.** Real vehicles have the second 120 Ω built into the chassis wiring at the gateway/ECM end of the bus. Most consumer scan tools (Innova 5210, Autel AL319, generic ELM327 clones) do **not** carry their own terminator — they assume the car provides it. Without the second 120 Ω at the OBD-II connector, the bus is under-terminated; the scan tool's transmissions reflect off the unterminated end, causing the MCP2515 to see continuous bit errors (`candump can0` shows a flood of `000 [0]` "error frames"). Confirmed empirically on Innova 5210 during the May 2026 install — the symptom disappears the moment a 120 Ω resistor is wired across pins 6 ↔ 14 at the connector.
 
 ---
 
@@ -117,7 +120,11 @@ This is the port the student plugs their scan tool into. Wire only these 5 pins:
 | 14 | CAN-L | MCP2515 CANL terminal |
 | 16 | +12V | Buck converter input → Pi 5V (and 470Ω resistor → L9637 Vbat) |
 
+In addition to the wires above, install **one 120 Ω resistor as a bridge between pin 6 (CAN-H) and pin 14 (CAN-L) right at the connector body** — this is the OBD-end bus terminator. It is not optional; see the note in Connection 1 for why. The resistor sits like a single rung of a ladder between the two CAN wires, near the back of the OBD-II plug; the CAN-H and CAN-L wires themselves continue uninterrupted to the MCP2515 screw terminals.
+
 Pins 1, 2, 3, 8, 9, 10, 11, 12, 13, 15 are left unconnected — they belong to other protocols (J1850, manufacturer-specific, ignition sense) we are not implementing in v1.
+
+**Termination sanity check before powering up:** with the OBD-II pigtail wired to both the MCP2515 module and the 120 Ω terminator, but the Pi powered off and no scan tool plugged in, measure resistance between OBD-II pins 6 and 14. Expected: ~60 Ω (two 120 Ω resistors in parallel — one on the MCP2515 module, one at the OBD-II connector). A reading of ~120 Ω means only one terminator is wired; ~40 Ω or less means a short or a wrong resistor value.
 
 ---
 
