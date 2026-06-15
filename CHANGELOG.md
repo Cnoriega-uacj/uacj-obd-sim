@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.4.3 — 2026-06-15
+
+Second small bug fix landed during the same UACJ on-site install. After
+v0.4.2 made the Mode 01 PID 01 byte A (MIL state + DTC count) consistent
+with Mode 03, the client confirmed against a real Kia that the Innova
+5210 **does** show the monitor-badges row when DTCs are present — it
+just won't show it when the readiness data and the DTC story are
+mutually inconsistent.
+
+Root cause: our default ScenarioState reports all monitors complete
+(byte B upper nibble = 0, byte D = 0x00) but scenarios load stored
+DTCs without telling the simulator that the affected monitor failed
+to complete. Scan tools cross-check this — "a P0420 is stored but the
+catalyst monitor reports complete" is an impossible vehicle state — and
+the Innova suppresses the badges rather than display nonsense.
+
+Fix in `EcuEmulator._mode01`: bytes B and D are now derived per
+dispatch by OR-ing the scenario's bytes with monitor-not-complete bits
+inferred from `dtcs_stored`. A new constant `_DTC_PREFIX_TO_MONITOR_BIT`
+maps DTC prefix ranges to the byte/bit they affect, covering the common
+generic powertrain codes:
+
+| DTC range | Monitor | Byte/bit |
+|-----------|---------|----------|
+| P0030-P0059 | O2 sensor heater | D bit 6 |
+| P0130-P0159 | O2 sensor | D bit 5 |
+| P0160-P0199 | Fuel system | B bit 5 |
+| P0200-P0229 | Fuel/air metering (CCM) | B bit 6 |
+| P0300-P0309 | Misfire | B bit 4 |
+| P0400-P0409 | EGR | D bit 7 |
+| P0410-P0419 | Secondary air | D bit 3 |
+| P0420-P0429 | Catalyst bank 1 | D bit 0 |
+| P0430-P0439 | Catalyst bank 2 / heated | D bit 1 |
+| P0440-P0469 | EVAP | D bit 2 |
+
+DTCs outside these ranges (transmission, body, U-network, etc.) fall
+back to "CCM not complete" so the badges row renders rather than
+appearing fully complete-but-with-DTCs. Scenarios that already set
+not-complete bits via `monitor_b` / `monitor_d` keep them — the
+derivation is purely additive.
+
+7 new tests in `tests/test_ecu.py`: P0420 → CAT, P0455 → EVAP, P0300 →
+MIS, unmapped DTC → CCM fallback, additive preservation, multi-DTC
+multi-bit, and the no-DTC pass-through case. Total tests 123 → 130.
+
+Confirmed on site: with v0.4.3 deployed, the Innova 5210 renders the
+monitor-badges row on the I/M Monitor Status page even with the
+stored P0420, showing CAT as not-complete (red) and all other monitors
+as complete (green) — same UX as a real vehicle with a catalyst code.
+
 ## 0.4.2 — 2026-06-15
 
 Tiny bug fix discovered immediately after v0.4.1 during the same on-site

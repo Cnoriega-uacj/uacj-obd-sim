@@ -62,6 +62,86 @@ def _dtc_code_to_bytes(code: str) -> bytes:
     return bytes([high, low])
 
 
+# SAE J1979 Mode 01 PID 01 monitor bit layout.
+#
+# Byte B (continuous monitors) upper nibble = "not complete" bits:
+#   bit 4 = Misfire monitor not complete
+#   bit 5 = Fuel system monitor not complete
+#   bit 6 = Comprehensive Components monitor (CCM) not complete
+#
+# Byte D (non-continuous monitors) = "not complete" bits:
+#   bit 0 = Catalyst (CAT)
+#   bit 1 = Heated Catalyst (HCAT) / catalyst bank 2
+#   bit 2 = Evaporative System (EVAP)
+#   bit 3 = Secondary Air System (AIR)
+#   bit 4 = A/C Refrigerant (deprecated, kept for layout)
+#   bit 5 = Oxygen Sensor (O2S)
+#   bit 6 = Oxygen Sensor Heater (HTR)
+#   bit 7 = EGR System
+#
+# When a stored DTC exists for a given monitor, we mark that monitor as
+# "not complete" so scan tools that cross-check DTC presence against
+# readiness (Innova 5210 confirmed) render the readiness page sensibly
+# instead of suppressing it as inconsistent.
+#
+# Each entry maps a 4-char DTC prefix → (target_byte_letter, bit_index).
+_DTC_PREFIX_TO_MONITOR_BIT: dict[str, tuple[str, int]] = {
+    # Continuous monitors (byte B upper nibble)
+    "P000": ("B", 6),  # Generic powertrain — comprehensive components
+    "P020": ("B", 6),  # Fuel/air metering (injector circuits) — CCM
+    "P021": ("B", 6),  # Fuel/air metering — CCM
+    "P022": ("B", 6),  # Throttle/pedal — CCM
+    "P016": ("B", 5),  # Fuel volume regulator / fuel system
+    "P017": ("B", 5),  # Fuel trim (lean/rich) — fuel system
+    "P018": ("B", 5),  # Fuel composition / fuel system
+    "P019": ("B", 5),  # Fuel rail pressure — fuel system
+    "P030": ("B", 4),  # Random misfire (P0300) / cylinder N (P0301-0309) — misfire monitor
+    # Non-continuous monitors (byte D)
+    "P003": ("D", 6),  # O2 sensor heater bank 1
+    "P005": ("D", 6),  # O2 sensor heater bank 2
+    "P013": ("D", 5),  # O2 sensor circuit (bank 1 sensor 1/2)
+    "P014": ("D", 5),  # O2 sensor circuit (bank 2)
+    "P015": ("D", 5),  # O2 sensor circuit (bank 1 sensor 2/heater control)
+    "P040": ("D", 7),  # EGR system
+    "P041": ("D", 3),  # Secondary air system
+    "P042": ("D", 0),  # Catalyst efficiency (bank 1)
+    "P043": ("D", 1),  # Catalyst efficiency (bank 2) / heated catalyst
+    "P044": ("D", 2),  # EVAP (purge flow, leak detected)
+    "P045": ("D", 2),  # EVAP (vent control, gross leak)
+    "P046": ("D", 2),  # Fuel level / EVAP related
+}
+
+
+def _derived_monitor_bytes(
+    base_b: int, base_d: int, stored_dtcs: list[str]
+) -> tuple[int, int]:
+    """
+    Return (byte_b, byte_d) for Mode 01 PID 01 derived from stored DTCs.
+
+    Starts from the scenario's `monitor_b` / `monitor_d`, then ORs in
+    "not complete" bits for any monitor that owns a stored DTC. The
+    scenario's existing bits are preserved — this only ever ADDS
+    not-complete bits, never clears them.
+    """
+    derived_b = base_b & 0xFF
+    derived_d = base_d & 0xFF
+    for code in stored_dtcs:
+        prefix = code[:4].upper()
+        target = _DTC_PREFIX_TO_MONITOR_BIT.get(prefix)
+        if target is None:
+            # Unknown DTC range — default to CCM not complete (byte B bit 6)
+            # so the monitor row still renders rather than appearing fully
+            # complete-but-with-DTCs (which scan tools treat as suspicious).
+            derived_b |= 1 << 6
+            continue
+        byte, bit = target
+        if byte == "B":
+            derived_b |= 1 << bit
+        elif byte == "D":
+            derived_d |= 1 << bit
+    return derived_b & 0xFF, derived_d & 0xFF
+
+
 def _pack_dtc_list(dtcs: list[str]) -> bytes:
     """
     Mode 03/07/0A response data: count byte + 2 bytes per DTC.
@@ -226,23 +306,37 @@ class EcuEmulator:
 
         if pid == 0x01:
             # Monitor status: 4 bytes A B C D per SAE J1979.
-            # Byte A is fully derived from current state: bit 7 = MIL on if
-            # any stored DTC exists; bits 0-6 = stored DTC count (saturating
-            # at 0x7F). Any `monitor_status` value on the scenario is
-            # ignored — scenarios that try to set "MIL off, 0 DTCs" while
-            # also storing a DTC produced an inconsistency that some
-            # scan tools (e.g. Innova 5210) detected by refusing to render
-            # the readiness page. Bytes B/C/D continue to come from the
-            # scenario (the available/complete bits for the continuous and
-            # non-continuous monitors).
+            #
+            # Byte A — fully derived: bit 7 = MIL on if any stored DTC,
+            # bits 0-6 = stored DTC count (saturating at 0x7F). Scenario
+            # `monitor_status` is ignored to avoid inconsistencies with
+            # Mode 03.
+            #
+            # Bytes B/D — start from the scenario, then OR in "not complete"
+            # bits for any monitor that owns a stored DTC (see
+            # `_DTC_PREFIX_TO_MONITOR_BIT`). Without this derivation, the
+            # default scenario state (all monitors complete) combined with
+            # stored DTCs is internally inconsistent and the Innova 5210
+            # silently drops the monitor-badges row. With the derivation,
+            # the row renders with the relevant monitor flagged not-complete,
+            # which is what a real vehicle with that DTC would show.
+            #
+            # Byte C — availability bitmap. We never derive this; only the
+            # scenario controls which monitors the vehicle is reported to
+            # have at all (e.g. some vehicles don't have secondary air or
+            # heated catalyst).
             stored_count = min(len(self.state.dtcs_stored), 0x7F)
             mil_on = 0x80 if self.state.dtcs_stored else 0x00
             byte_a = mil_on | stored_count
+            byte_b, byte_d = _derived_monitor_bytes(
+                self.state.monitor_b, self.state.monitor_d,
+                self.state.dtcs_stored,
+            )
             return bytes([0x41, 0x01,
                             byte_a,
-                            self.state.monitor_b & 0xFF,
+                            byte_b,
                             self.state.monitor_c & 0xFF,
-                            self.state.monitor_d & 0xFF])
+                            byte_d])
 
         key = f"01{pid:02X}"
         value = self.state.live.get(key)

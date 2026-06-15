@@ -68,18 +68,71 @@ def test_mode01_pid01_byte_a_pending_only_does_not_turn_mil_on() -> None:
     assert resp[2] == 0x00
 
 
-def test_mode01_pid01_bytes_bcd_come_from_scenario_state() -> None:
+def test_mode01_pid01_byte_c_comes_from_scenario_state() -> None:
+    # Byte C is availability — never derived; scenario controls it.
     ecu = _ecu(
         dtcs_stored=["P0420"],
         monitor_b=0x07,
         monitor_c=0xE7,
-        monitor_d=0x01,
+        monitor_d=0x00,
     )
     resp = ecu.handle(bytes([0x01, 0x01]))
-    assert resp[2] == 0x81  # byte A derived (MIL on, 1 DTC)
-    assert resp[3] == 0x07
     assert resp[4] == 0xE7
-    assert resp[5] == 0x01
+
+
+def test_mode01_pid01_p0420_derives_cat_not_complete() -> None:
+    # P0420 = catalyst bank 1 → byte D bit 0 set
+    ecu = _ecu(dtcs_stored=["P0420"], monitor_d=0x00)
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    assert resp[5] & 0x01 == 0x01  # CAT not complete
+
+
+def test_mode01_pid01_p0455_derives_evap_not_complete() -> None:
+    # P0455 = EVAP gross leak → byte D bit 2 set
+    ecu = _ecu(dtcs_stored=["P0455"], monitor_d=0x00)
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    assert resp[5] & 0x04 == 0x04  # EVAP not complete
+
+
+def test_mode01_pid01_p0300_derives_misfire_not_complete() -> None:
+    # P0300 = random misfire → byte B bit 4 set (continuous monitor)
+    ecu = _ecu(dtcs_stored=["P0300"], monitor_b=0x07)
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    assert resp[3] & 0x10 == 0x10  # MIS not complete
+
+
+def test_mode01_pid01_unknown_dtc_falls_back_to_ccm() -> None:
+    # Unmapped DTC range (e.g. P0700 transmission) → CCM (byte B bit 6) set
+    # so the monitor row still renders rather than appearing fully complete.
+    ecu = _ecu(dtcs_stored=["P0700"], monitor_b=0x07)
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    assert resp[3] & 0x40 == 0x40  # CCM not complete
+
+
+def test_mode01_pid01_derivation_preserves_existing_bits() -> None:
+    # Scenario explicitly says EVAP not complete (bit 2 of D = 1);
+    # adding P0420 should ALSO set CAT (bit 0), not clear EVAP.
+    ecu = _ecu(dtcs_stored=["P0420"], monitor_d=0x04)
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    assert resp[5] & 0x01 == 0x01  # CAT (from DTC)
+    assert resp[5] & 0x04 == 0x04  # EVAP (preserved from scenario)
+
+
+def test_mode01_pid01_multiple_dtcs_set_multiple_bits() -> None:
+    # P0420 (CAT, bit 0) + P0455 (EVAP, bit 2) + P0300 (MIS, byte B bit 4)
+    ecu = _ecu(dtcs_stored=["P0420", "P0455", "P0300"])
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    assert resp[3] & 0x10 == 0x10  # MIS in byte B
+    assert resp[5] & 0x01 == 0x01  # CAT in byte D
+    assert resp[5] & 0x04 == 0x04  # EVAP in byte D
+
+
+def test_mode01_pid01_no_dtcs_leaves_bytes_bd_at_scenario_values() -> None:
+    # Without DTCs, no derivation — bytes B and D pass through unchanged.
+    ecu = _ecu(monitor_b=0x07, monitor_d=0x00)
+    resp = ecu.handle(bytes([0x01, 0x01]))
+    assert resp[3] == 0x07
+    assert resp[5] == 0x00
 
 
 def test_mode03_returns_packed_dtcs() -> None:
