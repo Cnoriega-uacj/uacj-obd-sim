@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.7 — 2026-06-17
+
+The actual fix for the silent zero-data capture from v0.4.6. The
+timeout bump was necessary but not sufficient — the deeper bug was
+that our STN-tuning post-connect commands were breaking the
+already-established python-obd connection.
+
+Client confirmed by running `obd.OBD('COM3', timeout=5)` directly
+against his 2012 Mazda3 + OBDLink SX combination: status returned
+`Car Connected`, protocol detected as `ISO 15765-4 (CAN 11/500)`,
+113 PIDs supported, RPM reading 752.75 in real time. So the chain
+laptop ↔ OBDLink ↔ car works perfectly via plain python-obd.
+
+The breakage: after python-obd connects cleanly, our
+`_apply_stn_init_if_present()` re-sent:
+
+- `ATSP0` — re-triggers protocol auto-detection (overwrites the
+  protocol python-obd just negotiated)
+- `STCSEGR 1` — changes how the chip frames multi-frame responses
+  (python-obd then can't parse subsequent replies)
+- `STCFCPA` — also changes flow-control behaviour python-obd assumed
+
+The original intent was harmless STN-only tuning. In practice the
+commands rewrote the chip's working state and subsequent PID queries
+returned nothing.
+
+Fix: `_STN_RUNTIME_COMMANDS` is now an empty tuple. The STI/ATI
+banner probe still runs so `adapter.is_stn` and `adapter.stn_banner`
+remain available for diagnostics, but no commands modify the chip's
+runtime state after connect. python-obd's defaults handle the
+OBDLink SX correctly out of the box (the client's direct test
+proved this). STN-specific tuning should be opt-in via constructor
+args, not on by default.
+
+Two existing STN tests in `tests/test_elm327_stn.py` were rewritten
+to assert the new "probe only, no runtime commands" behaviour. All
+139 tests pass.
+
 ## 0.4.6 — 2026-06-17
 
 One more bug fix from the client's first real-vehicle capture attempt

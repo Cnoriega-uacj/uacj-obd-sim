@@ -83,15 +83,23 @@ def _connect_with_banner(fake_obd_module, banner: str, **kwargs):
     return adapter
 
 
-def test_stn_banner_triggers_st_init_sequence(fake_obd_module):
+def test_stn_banner_is_detected_but_no_runtime_commands_sent(fake_obd_module):
+    # v0.4.7: post-connect runtime commands intentionally disabled after
+    # on-site testing showed they broke an already-working python-obd
+    # connection. The banner probe still runs (STI/ATI) so callers can
+    # introspect chip identity via `adapter.is_stn`, but no additional
+    # ATSP0/STCSEGR/STCFCPA commands are sent that could rewrite the
+    # chip's working state.
     adapter = _connect_with_banner(fake_obd_module, "STN1170 v4.2.1")
     sent = [c.decode() for c in adapter._conn.interface.commands]
     assert adapter.is_stn is True
-    # The probe ran first...
+    # The probe still ran...
     assert sent[0].upper() in ("STI", "ATI")
-    # ...followed by the STN-only tuning commands.
-    for required in ("STCSEGR 1", "STCFCPA"):
-        assert any(required in s for s in sent), f"missing {required!r} in {sent}"
+    # ...but NO STN runtime tuning commands followed.
+    for forbidden in ("STCSEGR", "STCFCPA", "ATSP0"):
+        assert not any(forbidden in s for s in sent), (
+            f"runtime command {forbidden!r} should no longer be sent: {sent}"
+        )
 
 
 def test_obdlink_sx_banner_is_recognized(fake_obd_module):
@@ -109,11 +117,16 @@ def test_plain_elm327_clone_skips_stn_init(fake_obd_module):
         assert not any(forbidden in s for s in sent), f"unexpected {forbidden!r} sent to clone"
 
 
-def test_explicit_stn_mode_true_forces_st_init_even_on_clone(fake_obd_module):
+def test_explicit_stn_mode_true_marks_chip_as_stn_even_on_clone(fake_obd_module):
+    # v0.4.7: forcing stn_mode=True still marks the chip as STN for
+    # callers that want to read `adapter.is_stn`, but does NOT send
+    # runtime tuning commands (which broke real connections — see
+    # _STN_RUNTIME_COMMANDS docstring).
     adapter = _connect_with_banner(fake_obd_module, "ELM327 v1.5", stn_mode=True)
     sent = [c.decode() for c in adapter._conn.interface.commands]
     assert adapter.is_stn is True
-    assert any("STCSEGR" in s for s in sent)
+    for forbidden in ("STCSEGR", "STCFCPA", "ATSP0"):
+        assert not any(forbidden in s for s in sent)
 
 
 def test_explicit_stn_mode_false_skips_st_init_even_on_real_chip(fake_obd_module):

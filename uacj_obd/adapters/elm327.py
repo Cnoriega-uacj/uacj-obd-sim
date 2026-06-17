@@ -63,13 +63,15 @@ class Elm327Adapter(Adapter):
     #   STN — print firmware version (used to confirm STN chip vs clone)
     # We do NOT change non-volatile settings. Each session is stateless.
     _STN_PROBE_COMMANDS = ("STI", "STDI")  # banner / device-info
-    _STN_RUNTIME_COMMANDS = (
-        "ATE0",      # echo off (standard)
-        "ATL0",      # linefeeds off (standard)
-        "ATSP0",     # auto-detect protocol (standard)
-        "STCSEGR 1", # CAN segmented response auto-reassembly (STN-only)
-        "STCFCPA",   # ISO-TP flow-control: pad on (STN-only)
-    )
+    # NOTE: post-connect runtime commands intentionally empty after on-site
+    # testing on a 2012 Mazda3 with an OBDLink SX. The previous set re-sent
+    # ATSP0 (re-triggers protocol auto-detection) and STCSEGR 1 (changes
+    # how the chip frames multi-frame responses) AFTER python-obd had
+    # already negotiated the protocol cleanly. Both rewrote the chip's
+    # working state, leaving subsequent PID queries with no response.
+    # python-obd's defaults handle the OBDLink SX correctly; STN-specific
+    # tuning should be opt-in via constructor args, not on by default.
+    _STN_RUNTIME_COMMANDS: tuple[str, ...] = ()
 
     def __init__(
         self,
