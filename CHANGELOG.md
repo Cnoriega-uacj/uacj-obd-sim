@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.4 — 2026-06-15
+
+Tiny dependency-declaration fix discovered when the client installed the
+laptop dashboard fresh and pushed his first scenario from the UI. The
+dashboard's `POST /api/scenarios/{id}/push` endpoint uses `httpx` to
+talk to the Pi simulator, but `httpx` was mis-tagged as a dev-only
+dependency in `pyproject.toml`. A `pip install -e .` install (without
+`[dev]`) therefore omitted it, and the first push attempt failed with
+`502 {"detail":"simulator push failed: No module named 'httpx'"}`.
+
+Fix: moved `httpx>=0.27.0` from `[project.optional-dependencies].dev`
+to the main `[project].dependencies` list. No code changes.
+
+Upgrade path on an existing install: `pip install httpx` works as a
+one-line workaround; or `pip install -e . --upgrade` after pulling.
+
 ## 0.4.3 — 2026-06-15
 
 Second small bug fix landed during the same UACJ on-site install. After
