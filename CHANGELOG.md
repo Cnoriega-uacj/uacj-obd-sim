@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.8 — 2026-06-17
+
+Companion to v0.4.6 / v0.4.7. The default `Elm327Adapter` timeout is
+bumped from 2.0 s to 5.0 s to match the parameters the client
+confirmed worked in his direct python-obd test against the 2012 Mazda3
+(`obd.OBD('COM3', timeout=5)` returned Status: Car Connected,
+Protocol ISO 15765-4 CAN 11/500, 113 PIDs supported, live RPM 752.75).
+
+v0.4.6 raised the timeout from 0.1 to 2.0 — enough for per-query
+reads on an established connection but not always enough for the
+initial 0100 protocol-detection query on a cold connect through an
+OBDLink SX. The chip walks through several ISO 15765-4 variants
+during auto-detect and the cumulative wait can reach 2-4 seconds
+before any response. python-obd's connect path returns
+`is_connected() == False` on protocol-detect timeout — silently, with
+no exception raised — so the acquisition loop kept polling against a
+disconnected interface and the dashboard saw empty data forever.
+
+5.0 s matches the value the client's direct test used and is well
+below any UI latency the user would notice (since the slow path is
+just the cold connect; subsequent queries return in <50 ms once the
+protocol is locked).
+
+No tests change (the fake-obd test harness uses an in-memory
+interface, no real timeouts). All 139 tests still pass.
+
 ## 0.4.7 — 2026-06-17
 
 The actual fix for the silent zero-data capture from v0.4.6. The

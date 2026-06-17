@@ -78,13 +78,18 @@ class Elm327Adapter(Adapter):
         portstr: str | None = None,
         baudrate: int | None = None,
         fast: bool = False,
-        # Real OBD-II queries against a car commonly take 200-1000 ms each.
-        # python-obd's own default is 0.1 s, which silently times out almost
-        # every query against a real vehicle (the call just returns None and
-        # the acquisition loop sees empty data — no error, no log line, just
-        # nothing). 2.0 s gives every query enough time without making
-        # interactive UI feel slow.
-        timeout: float = 2.0,
+        # Real OBD-II queries against a car commonly take 200-1000 ms each,
+        # and the initial protocol-detection query (0100) on a cold connect
+        # can legitimately take 2-4 seconds on some OBDLink SX + vehicle
+        # combinations as the chip walks through ISO 15765-4 variants. The
+        # client's successful direct test against a 2012 Mazda3 used
+        # timeout=5 and connected cleanly; timeout=2.0 from v0.4.6 left
+        # the connection failing during protocol detection silently (python-obd
+        # returns is_connected()=False when the connect 0100 times out, no
+        # exception raised). 5.0 s matches the parameters known to work
+        # against the client's hardware and is still well below any UI
+        # latency the user would notice.
+        timeout: float = 5.0,
         stn_mode: bool | None = None,
     ) -> None:
         if not _HAS_OBD:
