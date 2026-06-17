@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.4.5 — 2026-06-15
+
+Third small bug fix from the same UACJ on-site install — discovered the
+moment the client pushed his first preset-built scenario from the
+laptop dashboard (after v0.4.4 unblocked the push). The Innova showed
+the right VIN, DTC, description, and MIL state, but the I/M Monitor
+badges row rendered with the wrong monitors flagged: the preset's
+`monitors_override` (which the dashboard ships as a `monitors[]`
+array on the wire) was encoded with non-SAE-J1979 bit positions.
+
+Root cause: `scenario_to_state` packed all `monitors[]` entries into
+byte B / byte C bits 0-7 in array order, ignoring the SAE J1979 byte
+layout. Per J1979:
+
+- **Byte B (continuous)** — MIS / Fuel / CCM in bits 0-2 (supported)
+  and bits 4-6 (not complete). All other bits reserved/zero.
+- **Byte C (non-continuous supported)** — CAT / HCAT / EVAP / AIR /
+  A/C / O2S / HTR / EGR in bits 0-7.
+- **Byte D (non-continuous not complete)** — same bit indices as C.
+
+The old encoder wrote the wrong bits and never set byte D at all, so
+the Innova interpreted scenarios as "MIS not complete" or "Fuel not
+complete" depending on array order — even when the scenario said the
+*catalyst* monitor was incomplete.
+
+Fix: new `_encode_monitors_per_j1979()` helper in `can_runtime.py`
+that maps monitor names (`"Catalyst"`, `"Evaporative System"`,
+`"EVAP"`, `"O2S"`, `"HTR"`, …) to the correct SAE J1979 byte/bit and
+populates B/C/D faithfully. Accepts both preset display names and
+the abbreviations scan tools use (Innova / Autel / generic ELM327).
+Unknown monitor names are silently skipped so future preset
+extensions don't break old simulators.
+
+9 new tests in `tests/test_simulator_integration.py` covering the
+encoder directly (all continuous complete, continuous incomplete,
+CAT-only, EVAP-only, unsupported→no bits set, alias matching,
+unknown-name graceful skip, a full typical post-2008 vehicle, and
+the propagation through `scenario_to_state`). Total tests 130 → 139.
+
+Combined with v0.4.2 (byte A from DTC count) and v0.4.3 (B/D
+not-complete bits derived from stored DTC ranges), the simulator now
+produces a Mode 01 PID 01 response that matches what a real vehicle
+in the same fault state would emit, end-to-end.
+
 ## 0.4.4 — 2026-06-15
 
 Tiny dependency-declaration fix discovered when the client installed the

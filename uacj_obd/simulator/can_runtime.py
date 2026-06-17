@@ -95,6 +95,100 @@ def _to_canmsg(frame: CanFrame):  # type: ignore[no-untyped-def]
                         is_extended_id=frame.arbitration_id > 0x7FF)
 
 
+# SAE J1979 Mode 01 PID 01 monitor name → (category, bit position).
+#
+# Category "continuous" → byte B (bits 0-2 supported / bits 4-6 not-complete).
+# Category "non_continuous" → byte C (supported) + byte D (not-complete) at the
+# same bit index.
+#
+# Names are matched case-insensitively after trimming, so the encoder accepts
+# the preset's display names ("Evaporative System") and the abbreviations the
+# Innova prints on screen ("EVAP", "O2S", "HTR").
+_MONITOR_NAME_TO_POSITION: dict[str, tuple[str, int]] = {
+    # Continuous monitors → byte B
+    "misfire": ("continuous", 0),
+    "mis": ("continuous", 0),
+    "fuel system": ("continuous", 1),
+    "fuel": ("continuous", 1),
+    "fue": ("continuous", 1),
+    "comprehensive components": ("continuous", 2),
+    "components": ("continuous", 2),
+    "ccm": ("continuous", 2),
+    # Non-continuous monitors → bytes C/D
+    "catalyst": ("non_continuous", 0),
+    "cat": ("non_continuous", 0),
+    "heated catalyst": ("non_continuous", 1),
+    "hcat": ("non_continuous", 1),
+    "hca": ("non_continuous", 1),
+    "evaporative system": ("non_continuous", 2),
+    "evap": ("non_continuous", 2),
+    "eva": ("non_continuous", 2),
+    "secondary air system": ("non_continuous", 3),
+    "secondary air": ("non_continuous", 3),
+    "air": ("non_continuous", 3),
+    "a/c system refrigerant": ("non_continuous", 4),
+    "a/c refrigerant": ("non_continuous", 4),
+    "a/c": ("non_continuous", 4),
+    "ac": ("non_continuous", 4),
+    "oxygen sensor": ("non_continuous", 5),
+    "o2 sensor": ("non_continuous", 5),
+    "o2s": ("non_continuous", 5),
+    "o2": ("non_continuous", 5),
+    "ozs": ("non_continuous", 5),
+    "oxygen sensor heater": ("non_continuous", 6),
+    "o2 sensor heater": ("non_continuous", 6),
+    "o2s heater": ("non_continuous", 6),
+    "o2 heater": ("non_continuous", 6),
+    "heater": ("non_continuous", 6),
+    "htr": ("non_continuous", 6),
+    "egr system": ("non_continuous", 7),
+    "egr": ("non_continuous", 7),
+}
+
+
+def _encode_monitors_per_j1979(monitors: list[dict]) -> tuple[int, int, int]:
+    """
+    Encode a scenario `monitors[]` array into Mode 01 PID 01 bytes B, C, D
+    per SAE J1979.
+
+    Each monitor entry is a dict with `id` or `name` plus boolean `supported`
+    and `ready` fields. Bit semantics per spec:
+
+    - "Supported" bit = 1 means the vehicle has that monitor at all.
+    - "Not complete" bit = 1 means the monitor has not run-to-completion since
+      the last DTC clear (i.e. NOT ready).
+
+    Unknown monitor names are silently ignored — the caller can still rely on
+    the scenario's default `monitor_b` / `monitor_c` / `monitor_d` for any
+    bits the array doesn't touch.
+
+    Returns (byte_b, byte_c, byte_d). Byte A is derived elsewhere from DTCs.
+    """
+    byte_b = 0
+    byte_c = 0
+    byte_d = 0
+    for m in monitors:
+        raw_name = m.get("id") or m.get("name") or ""
+        key = raw_name.strip().lower()
+        position = _MONITOR_NAME_TO_POSITION.get(key)
+        if position is None:
+            continue
+        category, bit = position
+        supported = bool(m.get("supported", False))
+        ready = bool(m.get("ready", False))
+        if category == "continuous":
+            if supported:
+                byte_b |= 1 << bit         # bits 0-2: continuous supported
+                if not ready:
+                    byte_b |= 1 << (bit + 4)  # bits 4-6: continuous not-complete
+        else:  # non_continuous
+            if supported:
+                byte_c |= 1 << bit         # byte C: non-continuous supported
+                if not ready:
+                    byte_d |= 1 << bit     # byte D: non-continuous not-complete
+    return byte_b, byte_c, byte_d
+
+
 def scenario_to_state(scenario_payload: dict, source_session: dict | None = None):
     """
     Convert an API scenario payload (and optionally the source session
@@ -144,15 +238,14 @@ def scenario_to_state(scenario_payload: dict, source_session: dict | None = None
 
     monitors = scenario_payload.get("monitors") or []
     if monitors:
-        # encode supported & ready bits (mode 01 PID 01 byte B)
-        mb = 0
-        mc = 0
-        # Test bits per SAE J1979 (subset). Bits set means "incomplete" / "test failed".
-        for i, m in enumerate(monitors[:8]):
-            if not m.get("supported", False):
-                mb |= (1 << i)
-            if not m.get("ready", False):
-                mc |= (1 << i)
-        state.monitor_b = mb
-        state.monitor_c = mc
+        # Per SAE J1979, byte B carries continuous monitors (MIS / Fuel / CCM)
+        # in bits 0-2 (supported) + 4-6 (not complete); bytes C and D carry
+        # non-continuous monitors (CAT / HCAT / EVAP / AIR / A/C / O2S / HTR /
+        # EGR) in the same bit indices 0-7 — byte C for supported, byte D for
+        # not complete. Match monitor entries against `_MONITOR_NAME_TO_POSITION`
+        # by `id` or `name`. Unknown names are silently skipped.
+        byte_b, byte_c, byte_d = _encode_monitors_per_j1979(monitors)
+        state.monitor_b = byte_b
+        state.monitor_c = byte_c
+        state.monitor_d = byte_d
     return state

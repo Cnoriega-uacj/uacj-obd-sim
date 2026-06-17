@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from uacj_obd.simulator.can_runtime import CanRuntime, scenario_to_state
+from uacj_obd.simulator.can_runtime import (
+    CanRuntime,
+    _encode_monitors_per_j1979,
+    scenario_to_state,
+)
 from uacj_obd.simulator.ecu import EcuEmulator, ScenarioState
 from uacj_obd.simulator.iso_tp import CanFrame, IsoTpFramer
 
@@ -77,3 +81,109 @@ def test_scenario_to_state_round_trip() -> None:
     ecu = EcuEmulator(state)
     resp = ecu.handle(bytes([0x03]))
     assert resp[0] == 0x43 and resp[1] == 1
+
+
+def test_encode_monitors_continuous_supported_and_complete() -> None:
+    # All three continuous monitors supported and complete →
+    # byte B lower nibble = 0x07, upper nibble = 0x00. Bytes C/D untouched.
+    b, c, d = _encode_monitors_per_j1979([
+        {"name": "Misfire", "supported": True, "ready": True},
+        {"name": "Fuel System", "supported": True, "ready": True},
+        {"name": "Comprehensive Components", "supported": True, "ready": True},
+    ])
+    assert b == 0x07
+    assert c == 0x00
+    assert d == 0x00
+
+
+def test_encode_monitors_continuous_supported_not_ready_sets_upper_nibble() -> None:
+    # Misfire supported but NOT ready → bit 0 (supported) + bit 4 (not complete).
+    b, _, _ = _encode_monitors_per_j1979([
+        {"name": "Misfire", "supported": True, "ready": False},
+    ])
+    assert b == 0x11  # 0b00010001
+
+
+def test_encode_monitors_catalyst_supported_not_ready() -> None:
+    # Catalyst supported, not ready (P0420-style scenario).
+    # Non-continuous bit 0 → byte C bit 0 (supported) + byte D bit 0 (not complete).
+    _, c, d = _encode_monitors_per_j1979([
+        {"name": "Catalyst", "supported": True, "ready": False},
+    ])
+    assert c == 0x01
+    assert d == 0x01
+
+
+def test_encode_monitors_evap_not_ready() -> None:
+    # EVAP is non-continuous bit 2.
+    _, c, d = _encode_monitors_per_j1979([
+        {"name": "Evaporative System", "supported": True, "ready": False},
+    ])
+    assert c == 0x04
+    assert d == 0x04
+
+
+def test_encode_monitors_unsupported_does_not_set_any_bit() -> None:
+    # A monitor explicitly marked unsupported contributes nothing.
+    b, c, d = _encode_monitors_per_j1979([
+        {"name": "Secondary Air System", "supported": False, "ready": True},
+    ])
+    assert b == 0 and c == 0 and d == 0
+
+
+def test_encode_monitors_accepts_id_and_abbreviation() -> None:
+    # The encoder accepts the preset's display name or the scan-tool abbreviation.
+    _, c_full, d_full = _encode_monitors_per_j1979([
+        {"name": "Oxygen Sensor Heater", "supported": True, "ready": False},
+    ])
+    _, c_abbr, d_abbr = _encode_monitors_per_j1979([
+        {"id": "HTR", "supported": True, "ready": False},
+    ])
+    assert c_full == c_abbr == 0x40  # bit 6
+    assert d_full == d_abbr == 0x40
+
+
+def test_encode_monitors_unknown_name_is_silently_ignored() -> None:
+    # Unknown monitor name doesn't crash and doesn't set any bit.
+    b, c, d = _encode_monitors_per_j1979([
+        {"name": "Quantum Flux Capacitor", "supported": True, "ready": False},
+    ])
+    assert b == 0 and c == 0 and d == 0
+
+
+def test_encode_monitors_full_typical_pre_2008_vehicle() -> None:
+    # Typical post-2008 CAN-OBD vehicle with everything supported and most
+    # monitors complete; CAT and EVAP not yet complete (drive-cycle pending).
+    b, c, d = _encode_monitors_per_j1979([
+        {"name": "Misfire", "supported": True, "ready": True},
+        {"name": "Fuel System", "supported": True, "ready": True},
+        {"name": "Comprehensive Components", "supported": True, "ready": True},
+        {"name": "Catalyst", "supported": True, "ready": False},
+        {"name": "Heated Catalyst", "supported": True, "ready": True},
+        {"name": "Evaporative System", "supported": True, "ready": False},
+        {"name": "Secondary Air System", "supported": False, "ready": True},
+        {"name": "A/C System Refrigerant", "supported": False, "ready": True},
+        {"name": "Oxygen Sensor", "supported": True, "ready": True},
+        {"name": "Oxygen Sensor Heater", "supported": True, "ready": True},
+        {"name": "EGR System", "supported": True, "ready": True},
+    ])
+    assert b == 0x07          # all 3 continuous supported + complete
+    assert c == 0xE7          # all non-cont supported except AIR (bit 3) and A/C (bit 4)
+    assert d == 0x05          # CAT (bit 0) + EVAP (bit 2) not complete
+
+
+def test_scenario_to_state_propagates_encoded_monitor_bytes() -> None:
+    # The high-level scenario_to_state passes the encoded bytes through to
+    # ScenarioState — the ECU emulator then renders them on Mode 01 PID 01.
+    payload = {
+        "vehicle": {"vin": "1HGCM82633A123456"},
+        "dtcs": [],
+        "monitors": [
+            {"name": "Misfire", "supported": True, "ready": True},
+            {"name": "Catalyst", "supported": True, "ready": False},
+        ],
+    }
+    state = scenario_to_state(payload)
+    assert state.monitor_b == 0x01     # MIS supported, complete
+    assert state.monitor_c == 0x01     # CAT supported
+    assert state.monitor_d == 0x01     # CAT not complete
