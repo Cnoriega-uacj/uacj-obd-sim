@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.4.6 — 2026-06-17
+
+One more bug fix from the client's first real-vehicle capture attempt
+the morning after the on-site install. With a 2012 Mazda3 (CAN-OBD-II)
+plus the kit's OBDLink SX adapter on Windows, the dashboard recorded a
+session, polled live data every second, and got HTTP 200 OK on every
+poll — but no PIDs ever populated. VIN stayed empty, vehicle stayed
+"Unknown". The OBDLink's LINK LED was solid green throughout (adapter
+powered and ready); OBDwiz (the manufacturer's own diagnostic app)
+read VIN and live data fine against the same car on the same port.
+So adapter and car were healthy — our dashboard was broken.
+
+Root cause: `Elm327Adapter` defaulted `timeout=0.1` (100 ms) when
+constructing the python-obd `OBD()` client. Real OBD-II queries against
+a vehicle commonly take 200-1000 ms each. python-obd treats a per-query
+timeout by returning `None` (not raising) — so the acquisition loop
+saw every PID query "succeed" with empty data, no errors logged, no
+exception thrown. The dashboard could not distinguish "query timed out"
+from "vehicle doesn't support this PID". Result: silent zero-data
+capture.
+
+Fix: default `Elm327Adapter` timeout raised from 0.1 to 2.0 seconds.
+Plenty for any real-world query, still keeps interactive UI snappy.
+Existing tests use `MockAdapter` and are unaffected — 139 tests still
+pass. The fix is a single-line constant change with a comment
+explaining why.
+
+Upgrade on the laptop:
+
+```powershell
+cd C:\uacj
+git pull
+pip install -e . --upgrade
+# Stop + restart the dashboard
+```
+
+The same captured session that was returning zero data before should
+now populate with VIN, DTCs, monitors, and live PIDs streaming from
+the car.
+
 ## 0.4.5 — 2026-06-15
 
 Third small bug fix from the same UACJ on-site install — discovered the

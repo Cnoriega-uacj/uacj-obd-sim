@@ -76,7 +76,13 @@ class Elm327Adapter(Adapter):
         portstr: str | None = None,
         baudrate: int | None = None,
         fast: bool = False,
-        timeout: float = 0.1,
+        # Real OBD-II queries against a car commonly take 200-1000 ms each.
+        # python-obd's own default is 0.1 s, which silently times out almost
+        # every query against a real vehicle (the call just returns None and
+        # the acquisition loop sees empty data — no error, no log line, just
+        # nothing). 2.0 s gives every query enough time without making
+        # interactive UI feel slow.
+        timeout: float = 2.0,
         stn_mode: bool | None = None,
     ) -> None:
         if not _HAS_OBD:
