@@ -142,6 +142,66 @@ def _derived_monitor_bytes(
     return derived_b & 0xFF, derived_d & 0xFF
 
 
+def _clean_ascii_field(value) -> str:
+    """
+    Sanitise a string-like value for Mode 09 ASCII transmission.
+
+    Captures from v0.4.0 through v0.4.9 stored VIN / calibration ID /
+    ECU name as the Python repr of a bytearray (e.g.
+    ``"bytearray(b'JM1BL1L72C1627697')"``) because the adapter did not
+    decode python-obd's bytearray response. Fixed forward in v0.4.10,
+    but the simulator still needs to play back those legacy sessions
+    cleanly. Steps:
+
+    1. If passed bytes/bytearray, decode to ASCII.
+    2. If passed a Python repr string ("bytearray(b'...')" / "b'...'"),
+       peel the wrapper.
+    3. Decode `\\x00` and similar escape sequences (legacy reprs of
+       null padding flow through as literal escape characters when
+       stored to JSON).
+    4. Drop non-VIN-shape characters (nulls, whitespace, control codes).
+
+    The output is always a plain ASCII string with only printable
+    characters and surrounding whitespace trimmed.
+    """
+    import codecs
+
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            text = bytes(value).decode("ascii", errors="replace")
+        except Exception:
+            return ""
+    else:
+        text = str(value)
+    text = text.strip()
+    # Strip the legacy "bytearray(b'...')" wrapper if it is the entire value.
+    wrappers = (
+        ("bytearray(b'", "')"),
+        ("bytearray(b\"", "\")"),
+        ("b'", "'"),
+        ("b\"", "\""),
+    )
+    for prefix, suffix in wrappers:
+        if text.startswith(prefix) and text.endswith(suffix):
+            text = text[len(prefix):-len(suffix)]
+            break
+    # If literal escape sequences came through (\x00, \n, \t, ...),
+    # interpret them as their bytes-form so we can strip them.
+    if "\\x" in text or "\\n" in text or "\\t" in text or "\\r" in text:
+        try:
+            decoded, _ = codecs.escape_decode(text.encode("ascii", errors="replace"))
+            text = decoded.decode("ascii", errors="replace")
+        except Exception:
+            pass
+    # Keep only ASCII printable characters (0x20-0x7E). This drops nulls,
+    # control codes, and any decode replacements (`�` becomes a
+    # non-printable when re-encoded to ASCII).
+    text = "".join(c for c in text if 0x20 <= ord(c) <= 0x7E)
+    return text.strip()
+
+
 def _pack_dtc_list(dtcs: list[str]) -> bytes:
     """
     Mode 03/07/0A response data: count byte + 2 bytes per DTC.
@@ -381,25 +441,28 @@ class EcuEmulator:
         if pid == 0x00:
             return bytes([0x49, 0x00, 0x54, 0x00, 0x00, 0x00])
         if pid == 0x02:
-            if not self.state.vin:
+            vin = _clean_ascii_field(self.state.vin)
+            if not vin:
                 return _negative(0x09, NRC_REQUEST_OUT_OF_RANGE)
-            vin = self.state.vin.encode("ascii")
-            if len(vin) > 17:
-                vin = vin[:17]
-            elif len(vin) < 17:
-                vin = vin.rjust(17, b"\x00")
+            raw = vin.encode("ascii", errors="replace")
+            if len(raw) > 17:
+                raw = raw[:17]
+            elif len(raw) < 17:
+                raw = raw.rjust(17, b"\x00")
             # 0x49 0x02 NODI=1 + 17 ASCII bytes = 20 bytes total
-            return bytes([0x49, 0x02, 0x01]) + vin
+            return bytes([0x49, 0x02, 0x01]) + raw
         if pid == 0x04:
-            if not self.state.calibration_id:
+            cal = _clean_ascii_field(self.state.calibration_id)
+            if not cal:
                 return _negative(0x09, NRC_REQUEST_OUT_OF_RANGE)
-            cal = self.state.calibration_id.encode("ascii")[:16].ljust(16, b"\x00")
-            return bytes([0x49, 0x04, 0x01]) + cal
+            raw = cal.encode("ascii", errors="replace")[:16].ljust(16, b"\x00")
+            return bytes([0x49, 0x04, 0x01]) + raw
         if pid == 0x0A:
-            if not self.state.ecu_name:
+            name = _clean_ascii_field(self.state.ecu_name)
+            if not name:
                 return _negative(0x09, NRC_REQUEST_OUT_OF_RANGE)
-            name = self.state.ecu_name.encode("ascii")[:20].ljust(20, b"\x00")
-            return bytes([0x49, 0x0A, 0x01]) + name
+            raw = name.encode("ascii", errors="replace")[:20].ljust(20, b"\x00")
+            return bytes([0x49, 0x0A, 0x01]) + raw
         return _negative(0x09, NRC_REQUEST_OUT_OF_RANGE)
 
     def _mode0A(self) -> bytes:

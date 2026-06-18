@@ -170,6 +170,58 @@ def test_mode09_vin_round_trip() -> None:
     assert resp[3:].decode("ascii").startswith("2HGFC2F59FH123456")
 
 
+def test_mode09_vin_handles_legacy_bytearray_repr_string() -> None:
+    """Per v0.4.11 audit: captures from v0.4.0 through v0.4.9 stored VIN
+    as the Python repr of a bytearray. The simulator must peel that
+    wrapper off when replaying those sessions, otherwise the Innova sees
+    nonsense and rejects the response."""
+    state = ScenarioState(vin="bytearray(b'JM1BL1L72C1627697')")
+    ecu = EcuEmulator(state)
+    resp = ecu.handle(bytes([0x09, 0x02]))
+    assert resp[:3] == bytes([0x49, 0x02, 0x01])
+    assert resp[3:] == b"JM1BL1L72C1627697"
+
+
+def test_mode09_vin_handles_legacy_bytes_repr_string() -> None:
+    state = ScenarioState(vin="b'1HGCM82633A123456'")
+    ecu = EcuEmulator(state)
+    resp = ecu.handle(bytes([0x09, 0x02]))
+    assert resp[3:] == b"1HGCM82633A123456"
+
+
+def test_mode09_vin_handles_actual_bytearray_state() -> None:
+    """Defensive: even if upstream code mistakenly stores bytearray
+    directly on the state, Mode 09 should still emit a clean VIN."""
+    state = ScenarioState(vin=bytearray(b"JM1BL1L72C1627697"))  # type: ignore[arg-type]
+    ecu = EcuEmulator(state)
+    resp = ecu.handle(bytes([0x09, 0x02]))
+    assert resp[3:] == b"JM1BL1L72C1627697"
+
+
+def test_mode09_vin_strips_null_padding_from_legacy_capture() -> None:
+    # python-obd sometimes returns VIN with leading nulls; the bytearray
+    # repr captured included them. Strip on Mode 09 emit.
+    state = ScenarioState(vin="bytearray(b'\\x00\\x00JM1BL1L72C1627697')")
+    ecu = EcuEmulator(state)
+    resp = ecu.handle(bytes([0x09, 0x02]))
+    # Whatever falls out must be 17 ASCII bytes, no `\x00` markers leaked.
+    assert resp[3:].decode("ascii").lstrip("\x00").rstrip("\x00").endswith("L72C1627697")
+
+
+def test_mode09_calibration_id_handles_legacy_bytearray_repr() -> None:
+    state = ScenarioState(calibration_id="bytearray(b'12612560')")
+    ecu = EcuEmulator(state)
+    resp = ecu.handle(bytes([0x09, 0x04]))
+    assert resp[3:].startswith(b"12612560")
+
+
+def test_mode09_ecu_name_handles_legacy_bytearray_repr() -> None:
+    state = ScenarioState(ecu_name="bytearray(b'ECM')")
+    ecu = EcuEmulator(state)
+    resp = ecu.handle(bytes([0x09, 0x0A]))
+    assert resp[3:].startswith(b"ECM")
+
+
 def test_mode09_vin_missing_returns_nrc() -> None:
     ecu = _ecu()
     resp = ecu.handle(bytes([0x09, 0x02]))

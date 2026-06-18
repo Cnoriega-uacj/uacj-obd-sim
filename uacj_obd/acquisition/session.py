@@ -34,9 +34,21 @@ class SessionConfig:
     # a curated subset instead.
     pids: list[str] = field(default_factory=list)
     manufacturer_pids: list[str] = field(default_factory=list)
-    sample_interval_s: float = 0.1
+    # Sleep BETWEEN full sweep cycles. Set to 0 to pull as fast as the
+    # adapter can; >0 to pace the rate. The old default of 0.1 was
+    # meaningless when capturing 100+ PIDs (a single sweep already takes
+    # 5-22 s on an OBDLink SX), so v0.4.11 makes 0 the default and lets
+    # the acquisition loop add a tiny sleep only when the sweep itself
+    # was very fast (small PID set on a fast adapter).
+    sample_interval_s: float = 0.0
     max_reconnects: int = 10
     notes: str = ""
+    # Minimum wall-clock time per sweep cycle. When a sweep finishes
+    # faster than this, the acquisition loop sleeps the difference so a
+    # 4-PID capture against the mock doesn't burn 100% CPU. When a sweep
+    # takes longer than this (e.g. 113 PIDs on a real car), no extra
+    # sleep — back to back queries.
+    min_cycle_seconds: float = 0.5
 
     # Fallback list used if the adapter cannot report supported PIDs
     # (e.g. partial connect, mock with no PID set populated). Kept as a
@@ -184,6 +196,7 @@ class AcquisitionSession:
                 log.info("acquisition using fallback PID list (%d PIDs)", len(pids))
         mfg_pids = list(self.config.manufacturer_pids)
         while not self._stop.is_set():
+            cycle_start = time.monotonic()
             try:
                 for pid in pids:
                     if self._stop.is_set():
@@ -201,7 +214,17 @@ class AcquisitionSession:
                         sample_count += 1
                 if end is not None and time.monotonic() >= end:
                     break
-                time.sleep(self.config.sample_interval_s)
+                # Adaptive cycle pacing (v0.4.11):
+                # - If the explicit sample_interval_s is set, honour it.
+                # - Otherwise, sleep only enough to bring the total cycle
+                #   time up to `min_cycle_seconds`. On a slow real-car
+                #   sweep this adds zero delay; on a fast mock sweep it
+                #   keeps the loop from spinning at 100% CPU.
+                elapsed = time.monotonic() - cycle_start
+                if self.config.sample_interval_s > 0:
+                    time.sleep(self.config.sample_interval_s)
+                elif elapsed < self.config.min_cycle_seconds:
+                    time.sleep(self.config.min_cycle_seconds - elapsed)
             except AdapterError as exc:
                 self._writer.write_raw(f"adapter error: {exc}")
                 reconnects += 1

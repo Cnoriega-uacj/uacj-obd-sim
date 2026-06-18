@@ -1,5 +1,121 @@
 # Changelog
 
+## 0.4.11 — 2026-06-18
+
+**Audit-driven stabilization release.** The previous ten patches
+(v0.4.1 through v0.4.10) all addressed real bugs surfaced during
+on-site validation, but each was reactive. Rather than continue
+patching one bug at a time, this release does a systematic audit of
+the four root-cause patterns those bugs revealed and fixes every
+related issue found, then closes the meta-cause by adding a
+real-vehicle round-trip integration test harness that exercises the
+full pipeline against the actual data shapes python-obd returns from
+real hardware.
+
+### Audit findings + fixes
+
+The ten earlier patches clustered into four patterns:
+
+| Pattern | Description | Example bugs |
+|---|---|---|
+| A | Assumption without verification | v0.4.1 (terminator), v0.4.5 (SAE bit layout), v0.4.7 (STN init "safe") |
+| B | Default chosen for dev convenience, not production | v0.4.4 (httpx dev-only), v0.4.6 / v0.4.8 (timeout), v0.4.9 (14-PID list) |
+| C | Python library boundary not normalized | v0.4.10 (bytearray VIN) |
+| D | SAE J1979 implementation incomplete | v0.4.2, v0.4.3, v0.4.11 (encoder coverage) |
+
+A systematic sweep of the codebase for each pattern surfaced five
+additional latent issues fixed in this release:
+
+1. **Pattern C** — `Elm327Adapter._read_freeze_frame()` stored the DTC
+   reference as `str(resp.value)`, leaking the Python repr of a
+   bytearray exactly like the VIN bug fixed in v0.4.10. Same root
+   cause; now routes through `_decode_string_response`.
+2. **Pattern C** — `Elm327Adapter.read_dtcs()` unpacked python-obd's
+   DTC tuples without normalizing the code field. On chips that return
+   the code as `bytes` rather than `str`, the captured session ended
+   up with `b'P0420'` written as a DTC code. Now decoded.
+3. **Pattern C** — `Elm327Adapter.read_pid()` fell through to storing
+   `value` as-is when python-obd's response had no `.magnitude`. If
+   that value was a `bytearray` (some status-byte PIDs), it broke
+   JSON serialization downstream. Now sanitized through
+   `_decode_string_response`.
+4. **Pattern A** — `EcuEmulator._mode09` (VIN / calibration ID / ECU
+   name) called `.encode("ascii")` directly on whatever the scenario
+   carried. Legacy sessions captured before v0.4.10 carry the
+   bytearray-repr wrapper string (`"bytearray(b'JM1...')"`) and the
+   simulator would have transmitted that garbage as the VIN. New
+   `_clean_ascii_field` helper peels legacy wrappers, decodes
+   `\x00`-style escape sequences, and filters to printable ASCII —
+   so legacy captures replay correctly without any data migration.
+5. **Pattern B** — `SessionConfig.sample_interval_s` defaulted to 0.1
+   s. With v0.4.9's all-supported-PIDs capture (typically 50-130 PIDs
+   per car), a single sweep takes 5-22 s on an OBDLink SX, making the
+   sleep meaningless. The default is now 0 with an adaptive
+   `min_cycle_seconds=0.5` floor — fast adapters don't burn 100% CPU,
+   slow real-car sweeps add zero overhead.
+
+### Simulator PID encoder expansion (Pattern D)
+
+The Mode 01 dispatch had encoders for 17 PIDs. The client's 2012
+Mazda3 reports 113 supported PIDs through python-obd; OBDwiz showed it
+reading ~30 commonly-tested ones. The simulator could only re-emit 17,
+so the Innova displayed a fraction of what the real car would.
+
+Expanded to 60+ PIDs covering everything OBDwiz read on the Mazda3 plus
+the common shop-floor diagnostics: timing advance (0x0E), distance with
+MIL on (0x21), wide-range O2 sensors (0x24-0x2B), commanded EGR / EGR
+error (0x2C-0x2D), commanded EVAP purge (0x2E), warm-ups + distance
+since codes cleared (0x30-0x31), EVAP vapor pressure (0x32), catalyst
+temps for both banks (0x3C-0x3F), absolute load (0x43), commanded AFR
+(0x44), relative throttle position (0x45), ambient air temperature
+(0x46), absolute throttle position B/C (0x47-0x48), accelerator pedal
+positions D/E/F (0x49-0x4B), commanded throttle actuator (0x4C), fuel
+type (0x51), ethanol percentage (0x52), secondary O2 trims (0x55-0x58),
+relative accelerator pedal position (0x5A), hybrid battery remaining
+life (0x5B), engine oil temperature (0x5C), engine fuel rate (0x5E),
+plus extra O2 voltage sensors (0x16-0x1B) and fuel rail pressures
+(0x22-0x23).
+
+Each encoder mirrors the SAE J1979 decode formula exactly. Every newly
+added PID has a dedicated round-trip test that locks the formula in.
+
+### Real-vehicle round-trip integration test harness
+
+The meta-cause behind every Pattern A/B/C bug was that we never tested
+real-against-real before on-site install. All 145 prior tests use
+`MockAdapter`. v0.4.11 adds `tests/test_real_vehicle_round_trip.py`
+with fixtures shaped like the actual python-obd return values from the
+client's hardware (bytearray VINs, multi-segment VINs, tuple-of-bytes
+DTC entries, the real 33-PID Mazda3 idle dump) and 17 tests that walk
+the full pipeline:
+
+    raw python-obd-style data
+        → Elm327Adapter._decode_string_response / DTC decode / live PID
+        → SessionStore-format payload
+        → scenario_to_state
+        → EcuEmulator dispatch
+        → Mode 01 / 03 / 09 response bytes match SAE J1979
+
+If any future change breaks a real-vehicle code path, this harness
+catches it before the client sees it.
+
+### Test count
+
+Total tests: 145 (v0.4.10) → 200 (v0.4.11).
+
+- +38 unit-level tests covering the 5 audit fixes and the 28 new
+  encoders
+- +17 end-to-end integration tests against the real Mazda3 data shape
+
+No regressions; all 200 pass.
+
+### Migration path
+
+Drop-in upgrade. Legacy captures from v0.4.0-v0.4.9 (bytearray-repr
+VINs) now replay cleanly without any data migration thanks to the
+simulator-side `_clean_ascii_field` helper. New captures use the
+clean code path end-to-end.
+
 ## 0.4.10 — 2026-06-18
 
 Client's Mazda3 captures showed VIN as `bytearray(b'JM1BL1L72C1627697')`

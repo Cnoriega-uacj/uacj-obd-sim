@@ -92,8 +92,146 @@ def _enc_fuel_system_status(value: float | int | str) -> bytes:
     return bytes([b & 0xFF, 0x00])
 
 
+# --- v0.4.11: expanded SAE J1979 Mode 01 coverage ----------------------
+# Added after on-site testing showed the client's Mazda3 capture had
+# many PIDs the simulator could not re-emit. Innova displayed only the
+# subset for which we had encoders. Each new encoder mirrors the
+# canonical J1979 formula; the decode formulas live in
+# `pids/data/standard_j1979.yaml`.
+
+
+def _enc_timing_advance(deg: float) -> bytes:
+    # PID 0x0E: (A / 2) - 64 → degrees; range -64 to +63.5
+    return bytes([_u8((deg + 64) * 2)])
+
+
+def _enc_byte_passthrough(value: float | int | str) -> bytes:
+    # PIDs 0x12 (commanded secondary air), 0x13 (O2 sensors present),
+    # 0x1C (OBD requirements), 0x1D (O2 sensors present 4-bank), 0x51
+    # (fuel type). All single-byte enums/bitmaps.
+    try:
+        b = int(value)
+    except (TypeError, ValueError):
+        b = 0
+    return bytes([b & 0xFF])
+
+
+def _enc_u16_km(km: float) -> bytes:
+    # PID 0x21 (distance with MIL on), 0x31 (distance since codes cleared)
+    raw = _u16(km)
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_fuel_rail_pressure_relative(kpa: float) -> bytes:
+    # PID 0x22: ((A*256 + B) * 0.079) → kPa, range 0-5177.265
+    raw = _u16(kpa / 0.079)
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_fuel_rail_pressure_high(kpa: float) -> bytes:
+    # PID 0x23: ((A*256 + B) * 10) → kPa, range 0-655350
+    raw = _u16(kpa / 10)
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_o2_wide_range(value: float) -> bytes:
+    # PIDs 0x24-0x2B: wide-range O2 sensors — equivalence ratio + voltage.
+    # 4-byte response: A B = equivalence ratio * 32768, C D = voltage * 8192.
+    # Accept the equivalence ratio as the scenario value; voltage defaults
+    # to a stoichiometric 0.5 V.
+    ratio_raw = _u16(value * 32768) if value else 32768  # default 1.0
+    voltage_raw = _u16(0.5 * 8192)
+    return bytes([
+        (ratio_raw >> 8) & 0xFF, ratio_raw & 0xFF,
+        (voltage_raw >> 8) & 0xFF, voltage_raw & 0xFF,
+    ])
+
+
+def _enc_commanded_egr(pct: float) -> bytes:
+    # PID 0x2C: A * 100 / 255
+    return bytes([_u8(pct * 255 / 100)])
+
+
+def _enc_egr_error(pct: float) -> bytes:
+    # PID 0x2D: (A * 100 / 128) - 100, range -100 to +99.22
+    return bytes([_u8((pct + 100) * 128 / 100)])
+
+
+def _enc_commanded_evap_purge(pct: float) -> bytes:
+    # PID 0x2E: A * 100 / 255
+    return bytes([_u8(pct * 255 / 100)])
+
+
+def _enc_warmups_since_cleared(count: float) -> bytes:
+    # PID 0x30: single byte count, 0-255
+    return bytes([_u8(count)])
+
+
+def _enc_evap_vapor_pressure(pa: float) -> bytes:
+    # PID 0x32: ((A*256 + B) / 4) - 8192 → Pa, range -8192 to +8191.75.
+    # SAE encodes as signed; we represent the raw 16-bit big-endian value.
+    raw = max(0, min(65535, int(round((pa + 8192) * 4))))
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_catalyst_temp(c: float) -> bytes:
+    # PIDs 0x3C-0x3F: ((A*256 + B) / 10) - 40 → degrees C, range -40 to +6513.5
+    raw = _u16((c + 40) * 10)
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_absolute_load(pct: float) -> bytes:
+    # PID 0x43: ((A*256 + B) * 100 / 255) → percent, range 0-25700
+    raw = _u16(pct * 255 / 100)
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_commanded_afr(ratio: float) -> bytes:
+    # PID 0x44: ((A*256 + B) / 32768) → equivalence ratio. Stoich = 1.0
+    raw = _u16(ratio * 32768)
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_pct_u8(pct: float) -> bytes:
+    # Generic 1-byte percent encoder for many SAE J1979 PIDs:
+    # 0x45 relative throttle, 0x47 abs throttle B, 0x48 abs throttle C,
+    # 0x49 accel pedal D, 0x4A accel pedal E, 0x4B accel pedal F,
+    # 0x4C commanded throttle actuator, 0x52 ethanol %, 0x5A relative
+    # accel pedal, 0x5B hybrid battery remaining.
+    return bytes([_u8(pct * 255 / 100)])
+
+
+def _enc_temp_minus_40(c: float) -> bytes:
+    # PID 0x46 ambient air temp, 0x5C engine oil temp: A - 40 → degrees C
+    return bytes([_u8(c + 40)])
+
+
+def _enc_secondary_o2_trim(pct: float) -> bytes:
+    # PIDs 0x55-0x58 (B1S2/B2S4/B3S6/B4S8 secondary O2 trims):
+    # (A * 100 / 128) - 100, range -100 to +99.22
+    return bytes([_u8((pct + 100) * 128 / 100)])
+
+
+def _enc_fuel_rate(l_per_h: float) -> bytes:
+    # PID 0x5E: ((A*256 + B) * 0.05) → L/h, range 0-3276.75
+    raw = _u16(l_per_h / 0.05)
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
+def _enc_two_byte_freeze_dtc(value: float | int | str) -> bytes:
+    # PID 0x02: 2-byte DTC reference for the freeze frame. Default to zero
+    # if the scenario doesn't carry a specific freeze DTC pointer.
+    try:
+        raw = int(value) if not isinstance(value, str) else int(value, 16)
+    except (TypeError, ValueError):
+        raw = 0
+    return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
+
+
 # Map full PID key (mode + pid) → encoder
 _ENCODERS: dict[str, Callable[..., bytes]] = {
+    # --- v0.4.0 baseline (the original 17) ---
+    "0102": _enc_two_byte_freeze_dtc,
     "0103": _enc_fuel_system_status,
     "0104": _enc_engine_load,
     "0105": _enc_coolant_temp,
@@ -111,6 +249,63 @@ _ENCODERS: dict[str, Callable[..., bytes]] = {
     "012F": _enc_fuel_level,
     "0133": _enc_baro,
     "0142": _enc_module_voltage,
+    # --- v0.4.11 expanded coverage ---
+    "0108": _enc_fuel_trim,   # short fuel trim bank 2
+    "0109": _enc_fuel_trim,   # long fuel trim bank 2
+    "010A": _enc_intake_pressure,  # fuel pressure (gauge)
+    "010E": _enc_timing_advance,
+    "0112": _enc_byte_passthrough,  # commanded secondary air status
+    "0113": _enc_byte_passthrough,  # O2 sensors present (2-bank)
+    "0116": _enc_o2_voltage,
+    "0117": _enc_o2_voltage,
+    "0118": _enc_o2_voltage,
+    "0119": _enc_o2_voltage,
+    "011A": _enc_o2_voltage,
+    "011B": _enc_o2_voltage,
+    "011C": _enc_byte_passthrough,  # OBD requirements
+    "011D": _enc_byte_passthrough,  # O2 sensors present (4-bank)
+    "011E": _enc_byte_passthrough,  # auxiliary input status
+    "0121": _enc_u16_km,             # distance with MIL on
+    "0122": _enc_fuel_rail_pressure_relative,
+    "0123": _enc_fuel_rail_pressure_high,
+    "0124": _enc_o2_wide_range,
+    "0125": _enc_o2_wide_range,
+    "0126": _enc_o2_wide_range,
+    "0127": _enc_o2_wide_range,
+    "0128": _enc_o2_wide_range,
+    "0129": _enc_o2_wide_range,
+    "012A": _enc_o2_wide_range,
+    "012B": _enc_o2_wide_range,
+    "012C": _enc_commanded_egr,
+    "012D": _enc_egr_error,
+    "012E": _enc_commanded_evap_purge,
+    "0130": _enc_warmups_since_cleared,
+    "0131": _enc_u16_km,             # distance since codes cleared
+    "0132": _enc_evap_vapor_pressure,
+    "013C": _enc_catalyst_temp,
+    "013D": _enc_catalyst_temp,
+    "013E": _enc_catalyst_temp,
+    "013F": _enc_catalyst_temp,
+    "0143": _enc_absolute_load,
+    "0144": _enc_commanded_afr,
+    "0145": _enc_pct_u8,             # relative throttle position
+    "0146": _enc_temp_minus_40,      # ambient air temperature
+    "0147": _enc_pct_u8,             # absolute throttle position B
+    "0148": _enc_pct_u8,             # absolute throttle position C
+    "0149": _enc_pct_u8,             # accelerator pedal position D
+    "014A": _enc_pct_u8,             # accelerator pedal position E
+    "014B": _enc_pct_u8,             # accelerator pedal position F
+    "014C": _enc_pct_u8,             # commanded throttle actuator control
+    "0151": _enc_byte_passthrough,   # fuel type
+    "0152": _enc_pct_u8,             # ethanol fuel %
+    "0155": _enc_secondary_o2_trim,
+    "0156": _enc_secondary_o2_trim,
+    "0157": _enc_secondary_o2_trim,
+    "0158": _enc_secondary_o2_trim,
+    "015A": _enc_pct_u8,             # relative accelerator pedal position
+    "015B": _enc_pct_u8,             # hybrid battery pack remaining life
+    "015C": _enc_temp_minus_40,      # engine oil temperature
+    "015E": _enc_fuel_rate,
 }
 
 

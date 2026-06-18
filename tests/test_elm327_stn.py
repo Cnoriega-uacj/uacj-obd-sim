@@ -165,6 +165,23 @@ def test_decode_string_response_concatenates_list_segments():
     assert _decode_string_response(parts) == "JM1BL1L72C1627697"
 
 
+def test_decode_string_response_handles_dtc_code_as_bytes():
+    """Per v0.4.11 audit: DTC codes from python-obd come back as bytes on
+    some chips. We normalise them to clean strings so the session JSON
+    never carries `b'P0420'` reprs."""
+    from uacj_obd.adapters.elm327 import _decode_string_response
+    assert _decode_string_response(b"P0420") == "P0420"
+    assert _decode_string_response(bytearray(b"P0455")) == "P0455"
+
+
+def test_decode_string_response_handles_freeze_dtc_as_bytes():
+    """Per v0.4.11 audit: same bytes/bytearray flow as VIN, applies to
+    FREEZE_DTC. Was `str(resp.value)` which leaked the Python repr."""
+    from uacj_obd.adapters.elm327 import _decode_string_response
+    assert _decode_string_response(b"P0420") == "P0420"
+    assert _decode_string_response(bytearray(b"\x00P0301\x00")) == "P0301"
+
+
 def test_explicit_stn_mode_false_skips_st_init_even_on_real_chip(fake_obd_module):
     adapter = _connect_with_banner(fake_obd_module, "STN2120 v4.x", stn_mode=False)
     sent = [c.decode() for c in adapter._conn.interface.commands]

@@ -272,11 +272,22 @@ class Elm327Adapter(Adapter):
             return None
         value = response.value
         unit = None
+        magnitude: float | int | str | None
         try:
             unit = str(value.units) if hasattr(value, "units") else None
-            magnitude = float(value.magnitude) if hasattr(value, "magnitude") else value
+            if hasattr(value, "magnitude"):
+                magnitude = float(value.magnitude)
+            elif isinstance(value, (int, float)):
+                magnitude = value
+            elif isinstance(value, (bytes, bytearray)):
+                # Defensive: some PIDs (VIN-style, status enums) come back
+                # as bytes through this code path on certain chips. Decode
+                # to a clean string so live_data.jsonl stays JSON-serialisable.
+                magnitude = _decode_string_response(value)
+            else:
+                magnitude = _decode_string_response(value)
         except Exception:
-            magnitude = value
+            magnitude = _decode_string_response(value)
         return LiveSample(pid=pid, name=cmd.name, value=magnitude, unit=unit)
 
     def stream_pids(self, pids: Iterable[str]) -> Iterable[LiveSample]:
@@ -328,8 +339,19 @@ class Elm327Adapter(Adapter):
             if not resp or resp.is_null():
                 continue
             for entry in resp.value or []:
-                code, desc = (entry[0], entry[1]) if isinstance(entry, (list, tuple)) else (str(entry), "")
-                out.append(DTC(code=code, status=status, description=desc or ""))
+                # python-obd returns DTC tuples where the code can be str,
+                # bytes, or bytearray depending on chip + library version.
+                # Normalise both fields through `_decode_string_response`
+                # so we never write `bytearray(b'P0420')` into a session.
+                if isinstance(entry, (list, tuple)):
+                    raw_code, raw_desc = entry[0], entry[1] if len(entry) > 1 else ""
+                else:
+                    raw_code, raw_desc = entry, ""
+                code = _decode_string_response(raw_code)
+                desc = _decode_string_response(raw_desc)
+                if not code:
+                    continue
+                out.append(DTC(code=code, status=status, description=desc))
         return out
 
     def clear_dtcs(self) -> bool:
@@ -352,7 +374,8 @@ class Elm327Adapter(Adapter):
             try:
                 resp = c.query(cmd, force=True)
                 if resp and not resp.is_null():
-                    ff.dtc = str(resp.value)
+                    # Same bytes/bytearray normalisation as the VIN read.
+                    ff.dtc = _decode_string_response(resp.value)
             except Exception as exc:  # pragma: no cover
                 log.debug("freeze dtc query failed: %s", exc)
         return ff if ff.dtc else None
