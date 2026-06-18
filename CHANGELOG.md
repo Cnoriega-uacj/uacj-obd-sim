@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.10 — 2026-06-18
+
+Client's Mazda3 captures showed VIN as `bytearray(b'JM1BL1L72C1627697')`
+in the dashboard's VEHICLES panel and PAST SESSIONS list. The on-disk
+session folder names had the same Python repr leaking through, breaking
+the documented `{VIN}_{make}_{model}_{year}/` layout. Vehicle make /
+model / year never decoded so every session showed "Unknown vehicle".
+
+Root cause: `Elm327Adapter.read_vehicle_info()` called `str(resp.value)`
+on python-obd's response. python-obd returns VIN / Calibration ID / ECU
+Name as `bytearray` (or sometimes a list of `bytearray` segments for
+multi-frame VINs). `str(bytearray(b'...'))` formats as the Python repr
+`"bytearray(b'...')"` rather than decoding the bytes to text.
+
+Fix: new module-level `_decode_string_response()` helper that normalises
+`bytes` / `bytearray` / `list-of-bytearray` / pass-through `str` to a
+clean ASCII string with nulls and surrounding whitespace stripped.
+Applied to VIN, calibration ID, and ECU name reads.
+
+Future captures will save with clean VINs (`"JM1BL1L72C1627697"`) and
+proper folder layout. Existing captures from before this patch have the
+bad strings baked in — they continue to work but display oddly until
+manually renamed.
+
+6 new tests in `tests/test_elm327_stn.py`: bytearray VIN, plain bytes,
+null/whitespace strip, str pass-through, None/empty, and the
+multi-segment list case. Total tests 139 → 145.
+
 ## 0.4.9 — 2026-06-18
 
 Client reported that captures of his 2012 Mazda3 only included ~10

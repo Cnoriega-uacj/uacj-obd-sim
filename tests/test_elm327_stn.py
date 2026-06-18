@@ -129,6 +129,42 @@ def test_explicit_stn_mode_true_marks_chip_as_stn_even_on_clone(fake_obd_module)
         assert not any(forbidden in s for s in sent)
 
 
+def test_decode_string_response_handles_bytearray_vin():
+    from uacj_obd.adapters.elm327 import _decode_string_response
+    # python-obd commonly returns VIN as bytearray on real ELM/STN chips.
+    assert _decode_string_response(bytearray(b"JM1BL1L72C1627697")) == "JM1BL1L72C1627697"
+
+
+def test_decode_string_response_handles_bytes():
+    from uacj_obd.adapters.elm327 import _decode_string_response
+    assert _decode_string_response(b"1HGCM82633A123456") == "1HGCM82633A123456"
+
+
+def test_decode_string_response_strips_nulls_and_whitespace():
+    from uacj_obd.adapters.elm327 import _decode_string_response
+    assert _decode_string_response(bytearray(b"\x00\x00JM1BL1L72C1627697\x00")) == "JM1BL1L72C1627697"
+    assert _decode_string_response(b"  ECM  ") == "ECM"
+
+
+def test_decode_string_response_handles_str_passthrough():
+    from uacj_obd.adapters.elm327 import _decode_string_response
+    assert _decode_string_response("ECM") == "ECM"
+    assert _decode_string_response("  12612560  ") == "12612560"
+
+
+def test_decode_string_response_handles_none_and_empty():
+    from uacj_obd.adapters.elm327 import _decode_string_response
+    assert _decode_string_response(None) == ""
+    assert _decode_string_response(b"") == ""
+
+
+def test_decode_string_response_concatenates_list_segments():
+    from uacj_obd.adapters.elm327 import _decode_string_response
+    # Some python-obd versions return multi-frame VINs as a list of segments.
+    parts = [bytearray(b"JM1BL1L7"), bytearray(b"2C1627697")]
+    assert _decode_string_response(parts) == "JM1BL1L72C1627697"
+
+
 def test_explicit_stn_mode_false_skips_st_init_even_on_real_chip(fake_obd_module):
     adapter = _connect_with_banner(fake_obd_module, "STN2120 v4.x", stn_mode=False)
     sent = [c.decode() for c in adapter._conn.interface.commands]

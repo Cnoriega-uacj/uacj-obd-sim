@@ -18,6 +18,31 @@ from .base import Adapter, AdapterError, AdapterStatus, ConnectionState
 
 log = logging.getLogger(__name__)
 
+
+def _decode_string_response(value) -> str:
+    """Decode a python-obd response value to a clean ASCII string.
+
+    python-obd returns VIN / calibration ID / ECU name as either `str`,
+    `bytes`, or `bytearray` depending on the python-obd version and the
+    chip. `str(bytearray(b'JM1...'))` formats as `"bytearray(b'JM1...')"`
+    — the Python repr leaks through to the dashboard and to the on-disk
+    session folder name. This helper normalises every shape to a clean
+    string with nulls and whitespace stripped.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            text = bytes(value).decode("ascii", errors="replace")
+        except Exception:
+            return bytes(value).hex().upper()
+        return text.replace("\x00", "").strip()
+    if isinstance(value, list):
+        # python-obd sometimes splits VIN across multiple message segments
+        parts = [_decode_string_response(v) for v in value]
+        return "".join(p for p in parts if p)
+    return str(value).strip()
+
 # python-obd is loaded lazily so the rest of the system runs without it
 # (e.g. on the Pi simulator side, or in CI).
 try:
@@ -279,7 +304,7 @@ class Elm327Adapter(Adapter):
             try:
                 resp = c.query(cmd, force=True)
                 if resp and not resp.is_null():
-                    setattr(info, attr_name, str(resp.value))
+                    setattr(info, attr_name, _decode_string_response(resp.value))
             except Exception as exc:  # pragma: no cover
                 log.debug("vehicle info %s failed: %s", cmd_name, exc)
         return info
