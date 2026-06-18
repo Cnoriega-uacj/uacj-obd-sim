@@ -26,14 +26,27 @@ def _now() -> datetime:
 
 @dataclass
 class SessionConfig:
-    pids: list[str] = field(default_factory=lambda: [
-        "010C", "010D", "0105", "010F", "0110", "0111", "0104",
-        "0106", "0107", "010B", "0114", "012F", "0103", "011F",
-    ])
+    # PID list to capture. Default (empty) means "ask the adapter for the
+    # full set of PIDs the connected vehicle reports as supported, then
+    # capture all of them" — this is what real-world classroom use wants
+    # (a 2012 Mazda3 supports ~113 PIDs; the old hardcoded 14-PID default
+    # was throwing away 99 of them). Provide an explicit list to capture
+    # a curated subset instead.
+    pids: list[str] = field(default_factory=list)
     manufacturer_pids: list[str] = field(default_factory=list)
     sample_interval_s: float = 0.1
     max_reconnects: int = 10
     notes: str = ""
+
+    # Fallback list used if the adapter cannot report supported PIDs
+    # (e.g. partial connect, mock with no PID set populated). Kept as a
+    # class-level constant rather than the default factory so we never
+    # silently fall back to it on a real car — the live capture loop
+    # logs which path it took.
+    _FALLBACK_PIDS = (
+        "010C", "010D", "0105", "010F", "0110", "0111", "0104",
+        "0106", "0107", "010B", "0114", "012F", "0103", "011F",
+    )
 
 
 class AcquisitionSession:
@@ -148,7 +161,27 @@ class AcquisitionSession:
         end = time.monotonic() + duration_s if duration_s else None
         reconnects = 0
         sample_count = 0
-        pids = list(self.config.pids)
+        # PID-list resolution per v0.4.9: if the caller passed an explicit
+        # list, honour it verbatim. Otherwise ask the adapter for the full
+        # set of supported PIDs (typically ~50-130 on a modern car). If the
+        # adapter can't enumerate (mock without a PID set, partial connect,
+        # adapter error), fall back to the curated 14-PID safe list — but
+        # log which path we took so a silent fallback is debuggable.
+        if self.config.pids:
+            pids = list(self.config.pids)
+            log.info("acquisition using explicit PID list (%d PIDs)", len(pids))
+        else:
+            try:
+                discovered = sorted(self.adapter.supported_pids())
+            except Exception as exc:  # pragma: no cover - defensive
+                log.warning("supported_pids() raised %s; using fallback list", exc)
+                discovered = []
+            if discovered:
+                pids = discovered
+                log.info("acquisition discovered %d supported PIDs from vehicle", len(pids))
+            else:
+                pids = list(self.config._FALLBACK_PIDS)
+                log.info("acquisition using fallback PID list (%d PIDs)", len(pids))
         mfg_pids = list(self.config.manufacturer_pids)
         while not self._stop.is_set():
             try:

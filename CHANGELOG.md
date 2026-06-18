@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.9 — 2026-06-18
+
+Client reported that captures of his 2012 Mazda3 only included ~10
+live PIDs even though python-obd's direct test against the same car
+showed 113 supported PIDs. Root cause: `SessionConfig.pids` defaulted
+to a hardcoded curated list of 14 PIDs (RPM, speed, coolant temp,
+throttle, MAF, fuel trim, intake air temp, MAP, runtime, O2 voltage,
+fuel level, ambient air temp, etc.). The acquisition loop iterated
+only over that list, ignoring everything else the vehicle could
+report (catalyst temps, advance angle, individual O2 sensors, EGR
+position, EVAP pressures, knock retard, etc.).
+
+Fix: `SessionConfig.pids` now defaults to an empty list, and the
+acquisition loop interprets that as "ask the adapter what PIDs the
+connected vehicle supports and capture all of them." The adapter
+interface already exposed `supported_pids()` (Elm327Adapter wraps
+python-obd's `supported_commands`; MockAdapter returns its mock
+set) — the acquisition session simply wasn't calling it.
+
+A curated 14-PID list is kept as `SessionConfig._FALLBACK_PIDS` and
+used only when the adapter can't enumerate (mock without a populated
+PID set, partial connect, etc.). Each branch logs which path was
+taken so silent fallbacks are debuggable.
+
+Explicit PID lists passed through the REST API still work as before —
+this only changes what "no list specified" means.
+
+No tests change semantically — existing tests either pass an explicit
+PID list or use a mock that populates `supported_pids()` already.
+139 tests pass.
+
 ## 0.4.8 — 2026-06-17
 
 Companion to v0.4.6 / v0.4.7. The default `Elm327Adapter` timeout is
