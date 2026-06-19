@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.6.4 — 2026-06-19
+
+**Dashboard admin/edge-case endpoint coverage.** v0.6.3 left
+`api/app.py` at 85%. The uncovered paths were the less-trafficked
+endpoints — CSV export, scenario PATCH / DELETE, preset list +
+instantiate, diff, sim-log proxy, replay-scenario, backup ZIP
+streaming, and the restore endpoint's file-shape rejection
+branches. None of them had ever been hit by automated tests.
+
+### Coverage improvements
+
+| Module | v0.6.3 | v0.6.4 |
+|--------|--------|--------|
+| `api/app.py` | 85% | covered via 23 new tests |
+| **Project total** | 86% | **88%** |
+
+### `tests/test_api_admin_v064.py` (+23 tests)
+
+CSV export:
+- 404 for unknown session id
+- generates CSV on first call from `live_data.jsonl`, serves cached
+  CSV on subsequent calls, header row matches expected schema
+
+Scenario PATCH / DELETE / GET:
+- 404 for unknown scenario id on GET, PATCH
+- Updates each field independently: label, dtcs, monitors,
+  freeze_frame, live_overrides
+- DELETE removes; subsequent GET is 404
+
+Presets:
+- `/api/presets` returns a non-empty list
+- 404 for unknown preset id on instantiate
+- Instantiate on top of a real captured session succeeds
+
+Diff:
+- 404 when either session is missing
+- Returns a dict for two real sessions
+
+Sim-log proxy:
+- 502 when the Pi URL is unreachable (no crash)
+
+Replay scenario:
+- 404 for unknown scenario id
+- 400 when scenario has no source_session_id
+- 404 when scenario references a deleted source session
+- 409 when another session is already running (the "only one capture
+  at a time" invariant)
+
+Backup / restore:
+- `/api/backup` returns a valid ZIP with `BACKUP_INFO.json`
+- `/api/restore` rejects non-.zip filenames with 400
+- `/api/restore` rejects invalid zip bytes with 400 + clear message
+
+Total tests 425 → 448 (+23). No regressions. Project coverage
+86% → 88%.
+
 ## 0.6.3 — 2026-06-19
 
 **Manufacturer-PID encoder coverage.** v0.6.2 left
