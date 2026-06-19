@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from .ecu import EcuEmulator
 from .can_runtime import scenario_to_state
 from .replay_engine import ReplayEngine
+from .. import __version__ as PKG_VERSION
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +29,12 @@ def make_simulator_server(ecu: EcuEmulator) -> FastAPI:
 
     @app.get("/api/sim/health")
     def health() -> dict:
-        return {"ok": True, "vin": ecu.state.vin, "stored_dtcs": ecu.state.dtcs_stored}
+        return {
+            "ok": True,
+            "version": PKG_VERSION,
+            "vin": ecu.state.vin,
+            "stored_dtcs": ecu.state.dtcs_stored,
+        }
 
     @app.get("/api/sim/state")
     def state() -> dict:

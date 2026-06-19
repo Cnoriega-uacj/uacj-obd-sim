@@ -87,7 +87,57 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
 
     @app.get("/api/health")
     def health() -> dict:
-        return {"ok": True, "now": datetime.now(timezone.utc).isoformat()}
+        from uacj_obd import __version__
+        return {
+            "ok": True,
+            "version": __version__,
+            "now": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app.get("/api/disk")
+    def disk_status() -> dict:
+        """v0.6.6: surface disk usage on the data root. The dashboard
+        can display this so Cristopher notices before captures start
+        truncating."""
+        from uacj_obd.safeguards import check_disk_space
+        d = check_disk_space(root)
+        return {
+            "ok": d.ok,
+            "warn": d.warn,
+            "total_bytes": d.total_bytes,
+            "free_bytes": d.free_bytes,
+            "message": d.message,
+        }
+
+    @app.get("/api/sim/version-check")
+    def sim_version_check(sim_url: str = "http://uacj-sim.local:8765") -> dict:
+        """v0.6.6: probe the Pi simulator's /api/sim/health endpoint,
+        read its package version, and compare to the laptop's version.
+        Surfaces version drift before Cristopher pushes a scenario and
+        gets confused by partial-feature behaviour."""
+        from uacj_obd import __version__
+        from uacj_obd.safeguards import compare_versions
+        try:
+            import httpx
+            with httpx.Client(timeout=3.0) as client:
+                r = client.get(f"{sim_url.rstrip('/')}/api/sim/health")
+                r.raise_for_status()
+                body = r.json()
+        except Exception as exc:
+            return {
+                "laptop_version": __version__,
+                "pi_version": None,
+                "verdict": "unreachable",
+                "message": f"could not reach simulator at {sim_url}: {exc}",
+            }
+        pi_version = body.get("version")
+        verdict = compare_versions(__version__, pi_version or "")
+        return {
+            "laptop_version": __version__,
+            "pi_version": pi_version,
+            "verdict": verdict,
+            "message": verdict if verdict != "unknown" else "Pi did not report a version (likely pre-v0.6.6 — upgrade the Pi)",
+        }
 
     @app.get("/api/pids")
     def list_pids() -> list[dict]:
@@ -99,6 +149,20 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
     def start_session(req: StartSessionRequest) -> dict:
         if state["current"] is not None:
             raise HTTPException(409, "a session is already running")
+        # v0.6.6 guardrail: pre-flight disk check. Refuse to start a
+        # new capture if the data root has too little free space —
+        # better to fail loudly here than silently truncate the JSONL
+        # mid-capture.
+        from uacj_obd.safeguards import (
+            check_disk_space,
+            normalize_session_duration,
+        )
+        disk = check_disk_space(root)
+        if not disk.ok:
+            raise HTTPException(507, disk.message)  # 507 = Insufficient Storage
+        # v0.6.6 guardrail: clamp runaway-long durations to a sane cap.
+        safe_duration = normalize_session_duration(req.duration_s)
+
         adapter = open_adapter(req.adapter, portstr=req.portstr) if req.portstr else open_adapter(req.adapter)
         cfg = SessionConfig(
             pids=req.pids or SessionConfig().pids,
@@ -113,7 +177,7 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
 
         def _runner() -> None:
             try:
-                sess.run(duration_s=req.duration_s)
+                sess.run(duration_s=safe_duration)
             finally:
                 sess.close()
                 state["current"] = None
@@ -123,7 +187,12 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         state["current"] = sess
         state["thread"] = thread
         thread.start()
-        return {"session_id": meta.session_id, "vehicle": meta.vehicle.model_dump()}
+        return {
+            "session_id": meta.session_id,
+            "vehicle": meta.vehicle.model_dump(),
+            "disk_warning": disk.message if disk.warn else None,
+            "applied_duration_s": safe_duration,
+        }
 
     @app.post("/api/sessions/stop")
     def stop_session() -> dict:

@@ -1,5 +1,92 @@
 # Changelog
 
+## 0.6.6 — 2026-06-19
+
+**Operational safeguards.** After v0.6.5 closed the static coverage
+gaps, the remaining real-world failure modes were operational —
+things the code is correct about but that classroom use can still
+get wrong. v0.6.6 turns three of the highest-likelihood "things
+that could still bite Cristopher" into enforced guardrails.
+
+### Three new safeguards
+
+**1. Version-mismatch detection.** Both the laptop dashboard
+(`GET /api/health`) and the Pi simulator (`GET /api/sim/health`)
+now report their package version. New `/api/sim/version-check`
+endpoint on the dashboard probes the Pi and returns a verdict:
+- `match` — same version, all good
+- `mismatch — Pi is older. Update with: cd /opt/uacj-obd-sim && sudo git pull && sudo systemctl restart uacj-obd-sim`
+- `mismatch — Pi is newer than laptop. Update the laptop with: cd C:\uacj && git pull`
+- `unreachable` — Pi not responding (silently ignored — could just be off)
+
+The dashboard's index page calls this on load and renders a yellow
+banner at the top if the verdict is a mismatch. Cristopher hit this
+twice during testing (Pi on v0.4.10 while laptop was on v0.4.14);
+banner makes it unmissable.
+
+**2. Disk-space pre-flight check.** `/api/sessions/start` now refuses
+with HTTP 507 (Insufficient Storage) if the data root has less than
+200 MB free. It warns (but starts) when free space is between 200
+MB and 1 GB. New `/api/disk` endpoint surfaces the current status so
+the dashboard's banner can show it. Captures at 100 PIDs per cycle
+generate roughly 1-2 MB / minute; without this, a semester of
+captures could silently exhaust a 32 GB SD card.
+
+**3. Session-duration cap.** `/api/sessions/start` clamps any
+`duration_s` value above 3600 (one hour) down to the cap and reports
+the applied value in the response. A user who forgot to pass a
+duration still gets indefinite ("None" → None), but a runaway 10000
+gets reduced to 3600. Prevents the "Cristopher started a capture and
+walked away" failure mode.
+
+### New module `uacj_obd/safeguards.py`
+
+Pure helpers — fully unit-testable without the API stack:
+- `normalize_session_duration(duration_s)` — None / negative / zero
+  → None; values above cap → clamped; legitimate values pass through.
+- `check_disk_space(data_root)` returns a `DiskStatus` dataclass
+  with `total_bytes`, `free_bytes`, `ok`, `warn`, `message`. Walks
+  up to the first existing parent if the path doesn't exist yet.
+- `compare_versions(laptop, pi)` returns one of `"match"`,
+  `"mismatch — Pi is older. ..."`, `"mismatch — Pi is newer ..."`,
+  or `"unknown"`. Parses dotted-integer versions, stopping at the
+  first non-digit character (so `0.7.0-dev` reads as `(0, 7, 0)`).
+
+### Single source of truth for the version
+
+`uacj_obd/__init__.py` now exports `__version__ = "0.6.6"` and
+`pyproject.toml` is bumped to match. Both the laptop's
+`/api/health` and the Pi's `/api/sim/health` read this constant
+so the cross-side comparison can never silently desync.
+
+### Tests
+
+26 new tests in `tests/test_safeguards_v066.py`:
+- `normalize_session_duration` — None / negative / zero / below-cap
+  / at-cap / above-cap
+- `check_disk_space` — returns a status, walks up nonexistent path,
+  refuses below minimum, warns between thresholds, clean when plenty
+- `compare_versions` — exact match, Pi older, Pi newer, minor jump,
+  empty strings, None, dev suffix
+- API integration — `/api/health` reports version, `/api/disk`
+  returns status, `/api/sim/version-check` handles unreachable /
+  match / mismatch / clamp / disk-full refusal
+- Pi simulator `/api/sim/health` includes the version field
+
+Total tests 475 → 501 (+26). No regressions. Project coverage
+remains at 89% (the new module is 100% covered).
+
+### Dashboard UI
+
+The index page now renders a banner at the top on load surfacing:
+- Yellow `DISK` pill if free space is low
+- Red `DISK FULL` pill if below the refusal threshold
+- Yellow `VERSION` pill if laptop and Pi are on different versions
+  (with the exact `git pull` command to fix it)
+
+Banner is informational only — never blocks the UI. Disabled
+silently when the Pi is unreachable (it might just be off).
+
 ## 0.6.5 — 2026-06-19
 
 **Defensive-path coverage for the ECU dispatcher.** v0.6.4 left

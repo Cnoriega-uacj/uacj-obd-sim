@@ -297,6 +297,39 @@ document.addEventListener("uacj:lang-changed", async () => {
 
 loadVehicles();
 loadSessions();
+
+// v0.6.6: surface operational warnings (disk + version mismatch) at
+// the top of the page so Cristopher notices them before starting a
+// capture. We never block the UI — these are informational. The
+// version probe is fire-and-forget (the Pi may legitimately be
+// offline if he hasn't powered it on yet).
+async function loadHealthBanners() {
+  const banner = document.createElement("div");
+  banner.id = "health-banner";
+  banner.style.cssText = "margin:8px 16px; display:flex; flex-direction:column; gap:4px;";
+  document.body.insertBefore(banner, document.body.firstChild);
+
+  try {
+    const disk = await api("/api/disk");
+    if (!disk.ok || disk.warn) {
+      const div = document.createElement("div");
+      const cls = disk.ok ? "pill warn" : "pill bad";
+      div.innerHTML = `<span class="${cls}" style="margin-right:6px;">${disk.ok ? "DISK" : "DISK FULL"}</span>${disk.message}`;
+      banner.appendChild(div);
+    }
+  } catch (e) { /* health is best-effort */ }
+
+  try {
+    const ver = await api("/api/sim/version-check");
+    if (ver.verdict !== "match" && ver.verdict !== "unreachable") {
+      const div = document.createElement("div");
+      div.innerHTML = `<span class="pill warn" style="margin-right:6px;">VERSION</span>laptop ${ver.laptop_version} ↔ Pi ${ver.pi_version || "?"} — ${ver.message}`;
+      banner.appendChild(div);
+    }
+    // "unreachable" is silent — Pi might just be off
+  } catch (e) { /* health is best-effort */ }
+}
+loadHealthBanners();
 </script>
 </body>
 </html>
