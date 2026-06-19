@@ -247,6 +247,6 @@ hurry.
 
 ## What comes next (after Stage 1 is verified working)
 
-- **Stage 2 — Pre-CAN add-ons.** Optional, for 2004–2007 GM (Silverado/Tahoe) and 2004 Ford (F-150/Mustang) vehicles. Adds two small modules to the same board — about 20 extra minutes. See [wiring.md](wiring.md) "Pre-CAN add-ons" section when you're ready.
+- **Stage 2 — Pre-CAN add-ons.** Optional, for 2004–2007 GM (Silverado/Tahoe) and 2004 Ford (F-150/Mustang) vehicles. Adds two small modules to the same board — about 20 extra minutes. See [wiring_walkthrough_stage2.md](wiring_walkthrough_stage2.md) for the step-by-step (or [wiring.md](wiring.md) "Pre-CAN add-ons" for just the schematics).
 - **Smoke test.** Push a scenario from the laptop dashboard, plug your scan tool into the OBD-II port, verify it reads the VIN and DTCs from the scenario.
 - **Repo transfer.** I'll move the GitHub repo to your account so the code lives under UACJ's name long-term.
