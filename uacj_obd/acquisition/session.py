@@ -181,6 +181,8 @@ class AcquisitionSession:
         # log which path we took so a silent fallback is debuggable.
         if self.config.pids:
             pids = list(self.config.pids)
+            self.meta.pid_resolution_source = "explicit"
+            self.meta.discovered_pids = []
             log.info("acquisition using explicit PID list (%d PIDs)", len(pids))
         else:
             try:
@@ -190,10 +192,18 @@ class AcquisitionSession:
                 discovered = []
             if discovered:
                 pids = discovered
+                self.meta.pid_resolution_source = "discovered"
+                self.meta.discovered_pids = list(discovered)
                 log.info("acquisition discovered %d supported PIDs from vehicle", len(pids))
             else:
                 pids = list(self.config._FALLBACK_PIDS)
+                self.meta.pid_resolution_source = "fallback"
+                self.meta.discovered_pids = []
                 log.info("acquisition using fallback PID list (%d PIDs)", len(pids))
+        # v0.6.11: persist the source-of-truth before the first cycle so
+        # the diagnostic is visible even if the capture crashes early.
+        if self._writer is not None:
+            self._writer._save_metadata()
         mfg_pids = list(self.config.manufacturer_pids)
         while not self._stop.is_set():
             cycle_start = time.monotonic()

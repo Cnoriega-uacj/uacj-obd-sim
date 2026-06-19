@@ -252,14 +252,95 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         if not row:
             raise HTTPException(404, "session not found")
         d = Path(row["folder"])
-        out = {"metadata": row, "dtcs": [], "monitors": [], "freeze_frame": None}
+        out: dict = {"metadata": dict(row), "dtcs": [], "monitors": [], "freeze_frame": None}
         for key, fname in (("dtcs", "dtcs.json"),
                             ("monitors", "monitors.json"),
                             ("freeze_frame", "freeze_frame.json")):
             p = d / fname
             if p.exists():
                 out[key] = json.loads(p.read_text())
+        # v0.6.11: augment metadata with the full VehicleInfo (vin, make,
+        # model, year, calibration_id, cvn, ecu_name) from metadata.json
+        # so the session page can render Cal ID + CVN, not just VIN.
+        meta_path = d / "metadata.json"
+        if meta_path.exists():
+            try:
+                meta_full = json.loads(meta_path.read_text())
+                veh = meta_full.get("vehicle") or {}
+                if veh:
+                    out["metadata"]["vehicle"] = veh
+            except (OSError, json.JSONDecodeError):
+                pass
         return out
+
+    @app.get("/api/sessions/{session_id}/diagnostics")
+    def session_diagnostics(session_id: str) -> dict:
+        """
+        v0.6.11: diagnose where the "real car reports 44 PIDs but
+        capture only got 10" gap is happening, without needing the
+        car or scan tool back on the bench.
+
+        Returns three counts that together pinpoint the bottleneck:
+          - `discovered_count` = PIDs the adapter said the car supports
+            (from supported_pids() at session start). If this is far
+            below the scan tool's count, the bitmap probe in the
+            adapter is the bottleneck — usually because python-obd's
+            command table doesn't include those PIDs.
+          - `captured_unique_count` = distinct PIDs that landed in
+            live_data.jsonl. If this is far below `discovered_count`,
+            individual reads are failing — typically because
+            python-obd lacks a decoder for those PIDs.
+          - `captured_only_pids` = PIDs that appear in live_data.jsonl
+            but were NOT in discovered_pids. These shouldn't normally
+            exist (would mean the captured read happened off-list).
+
+        Also surfaces `pid_resolution_source` so the instructor can
+        see "explicit" vs "discovered" vs "fallback" at a glance.
+        """
+        row = db.get_session(session_id)
+        if not row:
+            raise HTTPException(404, "session not found")
+        folder = Path(row["folder"])
+        meta_path = folder / "metadata.json"
+        meta: dict = {}
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                meta = {}
+        discovered_pids = sorted(meta.get("discovered_pids") or [])
+        pid_resolution_source = meta.get("pid_resolution_source", "")
+
+        captured: set[str] = set()
+        live = folder / "live_data.jsonl"
+        if live.exists():
+            with live.open() as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    pid = obj.get("pid")
+                    if isinstance(pid, str):
+                        captured.add(pid.upper())
+        captured_sorted = sorted(captured)
+        discovered_set = set(discovered_pids)
+        captured_only = sorted(captured - discovered_set)
+        missing_after_capture = sorted(discovered_set - captured)
+        return {
+            "session_id": session_id,
+            "pid_resolution_source": pid_resolution_source,
+            "discovered_count": len(discovered_pids),
+            "discovered_pids": discovered_pids,
+            "captured_unique_count": len(captured_sorted),
+            "captured_pids": captured_sorted,
+            "captured_only_pids": captured_only,
+            "missing_after_capture": missing_after_capture,
+            "total_samples": row.get("sample_count", 0),
+        }
 
     @app.get("/api/sessions/{session_id}/live")
     def get_session_live(session_id: str, limit: int = 1000) -> list[dict]:

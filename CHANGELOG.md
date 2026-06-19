@@ -1,5 +1,59 @@
 # Changelog
 
+## 0.6.11 — 2026-06-19
+
+**Capture-side PID diagnostics.** v0.6.10 confirmed via coverage
+preview that the scenario only carries 10 mode-01 PIDs. That points
+the question at the capture itself: did the adapter actually see
+the Mazda3's full 44 PIDs and lose 34 of them, or did
+`supported_pids()` only return 10 in the first place?
+
+### New session metadata fields
+
+`SessionMetadata` gains:
+- `discovered_pids: list[str]` — what `adapter.supported_pids()`
+  returned at session start (the universe the loop iterates).
+- `pid_resolution_source: str` — `"explicit"` / `"discovered"` /
+  `"fallback"`, recording which branch picked the PID list.
+
+`AcquisitionSession.run()` writes both into metadata.json before
+the first read so the diagnostic is visible even if capture
+crashes early.
+
+### New endpoint
+
+`GET /api/sessions/{id}/diagnostics` reports:
+- `discovered_count` + `discovered_pids` — the adapter-supported
+  set
+- `captured_unique_count` + `captured_pids` — distinct PIDs that
+  actually landed in `live_data.jsonl`
+- `missing_after_capture` — discovered but never captured (read
+  failures, decoder gaps)
+- `captured_only_pids` — captured but not in discovered (would
+  indicate a separate bug — should normally be empty)
+- `pid_resolution_source` + `total_samples`
+
+This is the "where did the 34 PIDs go" question, answered.
+
+### Dashboard
+
+Session page now shows a "Capture diagnostics" panel with the
+counts and the missing-PID list (capped at 20 in the UI).
+Session page's Vehicle panel also includes Cal ID + CVN (was just
+VIN before — backed by `/api/sessions/{id}` now reading
+metadata.json to fill the full VehicleInfo).
+
+### Tests
+
+`tests/test_capture_diagnostics_v0611.py` — 8 tests covering
+404 on missing session, end-to-end mock capture round-trip,
+discovered_count fidelity, captured_only empty in normal capture,
+missing-metadata graceful fallback, corrupt-jsonl line skipping,
+missing_after_capture set computation, and pid_resolution_source
+labeling.
+
+**584 tests pass.**
+
 ## 0.6.10 — 2026-06-19
 
 **Scenario coverage preview.** Cristopher's bench: the Mazda3

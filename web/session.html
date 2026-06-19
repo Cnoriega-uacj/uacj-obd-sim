@@ -61,6 +61,10 @@
     </div>
   </section>
   <section class="panel">
+    <h2>Capture diagnostics</h2>
+    <dl class="meta-grid" id="diagnostics"><dd class="muted">loading…</dd></dl>
+  </section>
+  <section class="panel">
     <h2>DTCs</h2>
     <table><thead><tr><th>Code</th><th>Status</th><th>Description</th></tr></thead>
       <tbody id="dtcs"></tbody></table>
@@ -106,9 +110,32 @@ function renderMeta(m) {
 
 function renderVehicleMeta(vin) {
   const veh = vin || {};
-  $("vehicle-meta").innerHTML = ["vin","make","model","year","calibration_id","ecu_name"]
+  $("vehicle-meta").innerHTML = ["vin","make","model","year","calibration_id","cvn","ecu_name"]
     .map(k => `<dt>${k}</dt><dd>${veh[k] || "—"}</dd>`).join("");
   $("vehicle").textContent = [veh.year, veh.make, veh.model].filter(Boolean).join(" ");
+}
+
+async function loadDiagnostics(sid) {
+  // v0.6.11: surface the capture-side PID accounting so the
+  // instructor can diagnose "real car shows 44 PIDs, capture got 10"
+  // without re-running. discovered = what adapter.supported_pids()
+  // returned; captured = unique PIDs that landed in live_data.jsonl;
+  // missing = the gap.
+  try {
+    const d = await api(`/api/sessions/${sid}/diagnostics`);
+    const el = $("diagnostics");
+    if (!el) return;
+    let html = `<dt>Resolution source</dt><dd>${d.pid_resolution_source || "—"}</dd>`;
+    html += `<dt>Adapter discovered</dt><dd>${d.discovered_count} PIDs</dd>`;
+    html += `<dt>Capture landed</dt><dd>${d.captured_unique_count} unique PIDs</dd>`;
+    if (d.missing_after_capture.length) {
+      html += `<dt>Missing after capture</dt><dd style="color:#a55">${d.missing_after_capture.length} PID(s): ${d.missing_after_capture.slice(0,20).join(", ")}${d.missing_after_capture.length > 20 ? "…" : ""}</dd>`;
+    }
+    if (d.captured_only_pids.length) {
+      html += `<dt>Off-list reads</dt><dd>${d.captured_only_pids.join(", ")}</dd>`;
+    }
+    el.innerHTML = html;
+  } catch (e) { /* diagnostics are best-effort */ }
 }
 
 function renderDtcs(dtcs) {
@@ -175,9 +202,10 @@ async function load() {
   }
   const session = await api(`/api/sessions/${sessionId}`);
   renderMeta(session.metadata);
-  renderVehicleMeta({ vin: session.metadata.vin });
+  renderVehicleMeta(session.metadata.vehicle || { vin: session.metadata.vin });
   renderDtcs(session.dtcs);
   renderMonitors(session.monitors);
+  loadDiagnostics(sessionId);
   const samples = await api(`/api/sessions/${sessionId}/live?limit=10000`);
   renderRaw(samples);
   // Build PID picker

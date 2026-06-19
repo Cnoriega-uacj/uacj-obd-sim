@@ -74,6 +74,16 @@ class SessionMetadata(BaseModel):
     vehicle: VehicleInfo = Field(default_factory=VehicleInfo)
     sample_count: int = 0
     notes: str = ""
+    # v0.6.11: capture-side diagnostics. `discovered_pids` is what
+    # `adapter.supported_pids()` returned at the start of the run
+    # (the universe of PIDs the adapter said the car could answer).
+    # `pid_resolution_source` records which branch we took:
+    # "explicit" (caller-supplied list), "discovered" (adapter scan),
+    # "fallback" (curated 14-PID safe list). Together these let an
+    # instructor diagnose the "real car reports 44 PIDs but capture
+    # only got 10" gap without re-running the session.
+    discovered_pids: list[str] = Field(default_factory=list)
+    pid_resolution_source: str = ""
 
 
 class Scenario(BaseModel):
