@@ -84,7 +84,16 @@
 
   <section class="stack">
     <div class="panel">
-      <h2 data-i18n="live.heading">Live Parameters</h2>
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+        <h2 data-i18n="live.heading" style="margin:0">Live Parameters</h2>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <label style="display:flex; align-items:center; gap:4px; font-size:13px;">
+            <input type="checkbox" id="show-all-pids" />
+            <span data-i18n="live.show_all">Show all captured PIDs</span>
+          </label>
+          <span class="pill" id="gauge-count" style="font-size:11px;">0</span>
+        </div>
+      </div>
       <div class="gauges" id="gauges"></div>
     </div>
     <div class="panel">
@@ -109,9 +118,15 @@
 </main>
 
 <script>
-const PIDS = ["010C","010D","0105","010F","0110","0111","0104","0106","0107","010B","0114","012F"];
+// v0.5.3: the 12-PID "common" set the dashboard used to hardcode for both
+// capture AND display. We keep this list ONLY for the default "Show all
+// captured PIDs" = unchecked view (focused/compact). Capture itself no
+// longer sends a list — the server auto-discovers every PID the car
+// supports (v0.4.9 behaviour) and stores them all in the session.
+const COMMON_PIDS = ["010C","010D","0105","010F","0110","0111","0104","0106","0107","010B","0114","012F"];
 let pollTimer = null;
 let currentSessionId = null;
+let showAllPids = false;
 
 function $(id) { return document.getElementById(id); }
 function setStatus(text, kind="ok") {
@@ -131,8 +146,12 @@ async function start() {
   const port = $("port").value || null;
   setStatus("starting…", "warn");
   try {
+    // v0.5.3: don't pass a PID list — let the server discover the car's
+    // full supported set so the capture is complete. The dashboard
+    // display still defaults to the compact 12-PID view; user can
+    // toggle "Show all captured PIDs" to see everything.
     const r = await api("/api/sessions/start", { method: "POST",
-      body: JSON.stringify({ adapter, portstr: port, pids: PIDS }) });
+      body: JSON.stringify({ adapter, portstr: port }) });
     currentSessionId = r.session_id;
     setStatus(`recording: ${r.session_id.slice(0,16)}…`, "ok");
     $("start").disabled = true;
@@ -178,16 +197,30 @@ async function loadStatic() {
 
 async function refresh() {
   if (!currentSessionId) return;
-  const live = await api(`/api/sessions/${currentSessionId}/live?limit=200`);
+  // v0.5.3: pull more samples so the "show all" mode has data for every
+  // PID the car reports (a 100-PID capture cycles through them
+  // serially, so 200 samples can leave the rarer PIDs without any
+  // value visible to the dashboard yet).
+  const live = await api(`/api/sessions/${currentSessionId}/live?limit=2000`);
   const latest = {};
   for (const s of live) latest[s.pid] = s;
-  $("gauges").innerHTML = PIDS.map(p => {
+  // PID set to render: either the focused 12-PID common set OR every
+  // PID we've seen a sample for in this session. Toggle is the
+  // checkbox at the top of the panel.
+  let pidList;
+  if (showAllPids) {
+    pidList = Object.keys(latest).sort();
+  } else {
+    pidList = COMMON_PIDS;
+  }
+  $("gauges").innerHTML = pidList.map(p => {
     const s = latest[p];
     if (!s) return `<div class="gauge"><div class="name">${p}</div><div class="value muted">—</div></div>`;
     const v = typeof s.value === "number" ? s.value.toFixed(1) : s.value;
     return `<div class="gauge"><div class="name">${s.name || p}</div>` +
            `<div class="value">${v}<span class="unit">${s.unit || ""}</span></div></div>`;
   }).join("");
+  $("gauge-count").textContent = `${pidList.length} / ${Object.keys(latest).length}`;
   const cur = await api("/api/sessions/current");
   if (!cur.active) {
     clearInterval(pollTimer);
@@ -216,6 +249,10 @@ async function loadSessions() {
 
 $("start").onclick = start;
 $("stop").onclick = stop;
+$("show-all-pids").onchange = (e) => {
+  showAllPids = e.target.checked;
+  if (currentSessionId) refresh();  // immediate re-render with new filter
+};
 
 // Backup: download a ZIP of every session + the SQLite metadata
 $("backup-btn").onclick = async () => {

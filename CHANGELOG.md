@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.5.3 — 2026-06-19
+
+**Dashboard show-all-captured-PIDs toggle + capture all by default.**
+Client captured 113 PIDs from his Mazda3 but the dashboard's LIVE
+PARAMETERS panel only showed 12. Two bugs in one — capture was
+constraining to a hardcoded list, and even if it hadn't been, the
+display was hardcoded to render only those 12. v0.5.3 fixes both.
+
+### Capture: server discovers, dashboard doesn't override
+
+The dashboard's `start` button used to POST a 12-PID list to
+`/api/sessions/start`, which overrode v0.4.9's "auto-discover all
+supported PIDs from the adapter" behaviour. Removed — the dashboard
+now sends no list, so the server uses everything the connected car
+supports (the client's Mazda3 reports 113).
+
+Backwards compatible: callers who explicitly pass a `pids` list (CLI,
+scripts, custom tooling) still get the constraint they asked for.
+
+### Display: toggle between focused view and full view
+
+New "Show all captured PIDs" checkbox above the LIVE PARAMETERS
+panel:
+
+- **Unchecked (default)** — render the curated 12-PID common set
+  (RPM, speed, coolant, throttle, MAF, fuel trim, etc.) so the panel
+  stays scannable for general use.
+- **Checked** — render EVERY PID for which we have a sample,
+  alphabetical by PID key. Catalyst temps, individual O2 sensors,
+  EGR position, EVAP pressures, accelerator pedal positions, fuel
+  rate, oil temp, ambient air temp — everything the car emits.
+
+A small counter pill shows `<rendered> / <total available>` so the
+operator can see at a glance how much they're showing vs hiding.
+
+### Data fetch tuning
+
+The dashboard now fetches `/api/sessions/{id}/live?limit=2000` instead
+of `?limit=200`. With 100+ PIDs cycling through serially on a real
+OBDLink SX, 200 samples can leave the rarer PIDs without any value
+yet. 2000 is enough for any classroom capture without bloating the
+response.
+
+### Tests
+
+3 new tests in `tests/test_v053_full_pid_capture.py`:
+- Capture started without `pids` field uses adapter's full supported
+  set.
+- Explicit `pids` field is still honoured (backwards compatibility).
+- `/api/sessions/{id}/live?limit=2000` returns without error.
+
+Total tests 285 → 288. No regressions.
+
+### i18n
+
+New translation keys: `live.show_all`.
+- English: "Show all captured PIDs"
+- Spanish: "Mostrar todos los PIDs capturados"
+
 ## 0.5.2 — 2026-06-19
 
 **Offline VIN → make / model year / region decoder.** Client
