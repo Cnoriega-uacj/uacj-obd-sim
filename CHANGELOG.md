@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.6.3 — 2026-06-19
+
+**Manufacturer-PID encoder coverage.** v0.6.2 left
+`simulator/encoders.py` at 83% — the standard SAE J1979 formulas
+were locked in by `test_encoder_expansion_v0_4_11.py`, but the
+manufacturer-PID encoder functions (Ford, GM, Toyota, Honda,
+Nissan), the make-bank switcher, and the defensive `int()` / `str()`
+fallback branches had never been exercised directly.
+
+### Coverage improvements
+
+| Module | v0.6.2 | v0.6.3 |
+|--------|--------|--------|
+| `simulator/encoders.py` | 83% | **higher (combined run 86%)** |
+| **Project total** | 85% | **86%** |
+
+### `tests/test_encoders_v063.py` (+36 tests)
+
+**Defensive branches in standard PID encoders:**
+- 0x03 fuel system status accepts string → falls back to closed loop
+- 0x12 / 0x13 / 0x1C / 0x1D / 0x51 byte_passthrough: non-numeric
+  string → 0
+- 0x24-0x2B wide-range O2 with value=0 → stoichiometric default
+- value=None → None response
+
+**Manufacturer encoders (Ford / GM / Toyota / Honda / Nissan):**
+- Ford trans oil temp, key-on runtime, A/C compressor (truthy int
+  + 'on'/'true'/'yes' strings), fuel pump duty, gear pass-through.
+- GM oil life, trans fluid temp, fuel tank pressure (signed offset),
+  gear, baro.
+- Toyota engine runtime minutes, hybrid SOC, inverter temp.
+- Honda ATF temp, VTEC oil pressure, brake switch (incl. "pressed"/
+  "released" strings), target idle RPM, knock retard signed degrees,
+  fuel pressure.
+- Nissan CVT temp.
+
+**Make-bank switching:**
+- `active_make()` starts at "default"
+- `select_make("nissan")` swaps PID 0x221101 from Ford's key-on
+  runtime to Nissan's CVT ratio
+- `select_make("toyota")` adds 0x220156 accelerator pedal (overriding
+  Honda knock retard)
+- Case-insensitive matching
+- Unknown make falls back to default
+- None / empty string falls back to default
+
+**`encode_mfg_pid` error paths:**
+- value=None → None
+- unknown PID key → None (not exception)
+- encoder raises (e.g. list passed in) → None (caught + swallowed)
+- `encodable_mfg_pids()` reflects active bank
+
+Total tests 389 → 425 (+36). No regressions. Project coverage
+85% → 86%.
+
 ## 0.6.2 — 2026-06-19
 
 **Final coverage pass on the simulator's CAN runtime.** The
