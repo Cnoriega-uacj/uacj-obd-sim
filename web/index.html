@@ -66,6 +66,9 @@
     </div>
     <div id="vehicle" class="muted" data-i18n="session.no_vehicle">no vehicle connected</div>
 
+    <h2>Pi Status</h2>
+    <div id="pi-status" class="muted" style="font-size:12px; line-height:1.5;">checking…</div>
+
     <h2 data-i18n="vehicles.heading">Vehicles</h2>
     <div id="vehicles"></div>
 
@@ -364,6 +367,48 @@ async function loadHealthBanners() {
   } catch (e) { /* health is best-effort */ }
 }
 loadHealthBanners();
+
+// v0.6.8: poll the Pi state proxy every 10s so the instructor can see
+// at-a-glance what the Pi is doing — VIN loaded, replay running,
+// persistence status. Best-effort: if the Pi is offline, render an
+// "offline" line and keep polling.
+async function refreshPiStatus() {
+  const el = document.getElementById("pi-status");
+  if (!el) return;
+  try {
+    const p = await api("/api/sim/state-proxy");
+    if (!p.reachable) {
+      el.innerHTML = `<span class="pill warn" style="margin-right:6px;">OFFLINE</span>Pi not reachable`;
+      return;
+    }
+    const s = p.state || {};
+    const persist = p.persistence || {};
+    const vin = s.vin || "(no scenario)";
+    const dtcCount = (s.stored_dtcs || []).length;
+    const replay = s.replay || {};
+    const replayLine = replay.running
+      ? `<span class="pill ok">REPLAY</span> ${replay.samples_applied} samples (loop=${replay.loop})`
+      : `<span class="pill muted">STATIC</span>`;
+    let persistLine = "";
+    if (persist.enabled) {
+      if (persist.exists) {
+        const mt = persist.mtime ? new Date(persist.mtime * 1000).toLocaleString() : "?";
+        persistLine = `<div>Saved scenario: <strong>${persist.vin || "?"}</strong> <span class="muted">(${mt})</span></div>`;
+      } else {
+        persistLine = `<div class="muted">no saved scenario (reboot will start blank)</div>`;
+      }
+    }
+    el.innerHTML = `
+      <div>VIN: <strong>${vin}</strong> &middot; ${dtcCount} DTC(s)</div>
+      <div>${replayLine}</div>
+      ${persistLine}
+    `;
+  } catch (e) {
+    el.innerHTML = `<span class="pill warn">ERR</span> ${e.message}`;
+  }
+}
+refreshPiStatus();
+setInterval(refreshPiStatus, 10000);
 </script>
 </body>
 </html>

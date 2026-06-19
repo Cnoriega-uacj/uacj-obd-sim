@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.6.8 — 2026-06-19
+
+**Pi state visibility on the dashboard.** v0.6.6 added a
+version-mismatch banner; v0.6.7 added persistence so reboots don't
+lose the loaded scenario. Both fixes solved real problems but were
+invisible to the instructor — the dashboard had no way to show what
+the Pi was actually doing. v0.6.8 surfaces that.
+
+### New laptop endpoint
+
+`GET /api/sim/state-proxy` fans out to the Pi's `/api/sim/state`
+and `/api/sim/persistence`, merges them, and returns a single
+payload. If the Pi is unreachable, `reachable=False` with an error
+message — never a 5xx, because the dashboard polls this on a 10s
+timer and a 500 would noise up the console. If `/state` is fine
+but `/persistence` is missing (Pi running pre-v0.6.7), the proxy
+returns `reachable=True` with `persistence.enabled=False`, so a
+mixed-version classroom doesn't break the panel.
+
+### Dashboard "Pi Status" panel
+
+New panel in the left sidebar, between "Vehicle" and "Vehicles".
+Polls `/api/sim/state-proxy` every 10s and renders:
+- VIN currently loaded on the Pi (or "(no scenario)" if blank)
+- Stored DTC count
+- Replay state: `REPLAY` pill with samples_applied + loop flag if
+  the live-data timeline is running, or `STATIC` pill otherwise
+- Persistence status: the saved scenario's VIN and mtime if any,
+  or "no saved scenario (reboot will start blank)" if none
+
+If the Pi is offline, the panel shows an `OFFLINE` pill and keeps
+polling — exactly the failure mode where the instructor needs to
+know quickly that the Pi isn't ready.
+
+### Tests
+
+`tests/test_state_proxy_v068.py` — 6 tests covering happy-path
+merging, both-unreachable, state-ok-persistence-missing,
+custom-sim_url override, and trailing-slash hygiene.
+
+**551 tests pass.**
+
 ## 0.6.7 — 2026-06-19
 
 **Reboot-survival + storage hygiene.** Two more real-world

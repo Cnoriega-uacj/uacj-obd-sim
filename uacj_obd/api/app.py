@@ -139,6 +139,39 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
             "message": verdict if verdict != "unknown" else "Pi did not report a version (likely pre-v0.6.6 — upgrade the Pi)",
         }
 
+    @app.get("/api/sim/state-proxy")
+    def sim_state_proxy(sim_url: str = "http://uacj-sim.local:8765") -> dict:
+        """
+        v0.6.8: consolidate everything the dashboard needs to render the
+        "Pi Status" panel into one round-trip. Fans out to the Pi's
+        /api/sim/state and /api/sim/persistence concurrently in spirit
+        (sequentially in code — two cheap calls, not worth aiogtther),
+        returns one merged payload. If the Pi is unreachable, returns
+        `reachable=False` rather than raising; the dashboard renders an
+        "offline" indicator instead of an error banner.
+        """
+        base = sim_url.rstrip("/")
+        out: dict = {"reachable": False, "sim_url": sim_url}
+        try:
+            import httpx
+            with httpx.Client(timeout=3.0) as client:
+                rs = client.get(f"{base}/api/sim/state")
+                rs.raise_for_status()
+                state_body = rs.json()
+                try:
+                    rp = client.get(f"{base}/api/sim/persistence")
+                    rp.raise_for_status()
+                    persistence_body = rp.json()
+                except Exception:
+                    persistence_body = {"enabled": False}
+        except Exception as exc:
+            out["error"] = f"could not reach simulator: {exc}"
+            return out
+        out["reachable"] = True
+        out["state"] = state_body
+        out["persistence"] = persistence_body
+        return out
+
     @app.get("/api/pids")
     def list_pids() -> list[dict]:
         return [d.__dict__ for d in pid_reg.all()]
