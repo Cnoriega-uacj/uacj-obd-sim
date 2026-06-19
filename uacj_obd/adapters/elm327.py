@@ -452,14 +452,17 @@ class Elm327Adapter(Adapter):
                 cmd = candidate
                 break
         if cmd is None:
-            return None
+            # v0.6.13: PID is supported by the car (raw bitmap probe said
+            # so) but python-obd has no decoder for it. Read raw bytes
+            # so the simulator can pass them through later.
+            return self._read_pid_raw(pid, mode, pid_num)
         try:
             response = c.query(cmd, force=True)
         except Exception as exc:
             self._last_error = str(exc)
-            return None
+            return self._read_pid_raw(pid, mode, pid_num)
         if response is None or response.is_null():
-            return None
+            return self._read_pid_raw(pid, mode, pid_num)
         value = response.value
         unit = None
         magnitude: float | int | str | None
@@ -479,6 +482,84 @@ class Elm327Adapter(Adapter):
         except Exception:
             magnitude = _decode_string_response(value)
         return LiveSample(pid=pid, name=cmd.name, value=magnitude, unit=unit)
+
+    def _read_pid_raw(self, pid: str, mode: int, pid_num: int) -> LiveSample | None:
+        """
+        v0.6.13: fallback path for PIDs python-obd can't decode. Send
+        the request as a synthesised OBDCommand with a noop decoder
+        and store the raw response bytes as `"raw:HEX"` in the sample.
+        The simulator's pass-through encoder will replay those bytes
+        verbatim.
+
+        Only fires for Mode 01 — Mode 09 vehicle-info has dedicated
+        read paths above, and Mode 02/03/etc. are static services
+        the simulator answers from scenario state directly.
+        """
+        if mode != 0x01:
+            return None
+        if not _HAS_OBD:
+            return None
+        try:
+            from obd import OBDCommand, ECU
+            from obd.decoders import noop
+        except Exception:  # pragma: no cover
+            return None
+        try:
+            c = self._ensure()
+        except AdapterError:
+            return None
+        try:
+            cmd = OBDCommand(
+                f"raw_pid_{pid}",
+                f"raw passthrough Mode {mode:02X} PID {pid_num:02X}",
+                f"{mode:02X}{pid_num:02X}".encode("ascii"),
+                # We don't know the response length; python-obd will
+                # accept whatever the ECU returns.
+                0,
+                noop,
+                ECU.ENGINE,
+            )
+            response = c.query(cmd, force=True)
+        except Exception as exc:
+            log.debug("raw read %s failed: %s", pid, exc)
+            return None
+        if response is None or response.is_null():
+            return None
+        # Reuse the bitmap-extraction helper to pull data bytes out of
+        # whatever response shape python-obd produced. For a normal
+        # Mode 01 data response, the data bytes ARE the payload (no
+        # bitmap parsing needed) — we just want them as hex.
+        candidates = _extract_all_bitmap_candidates(response)
+        # _extract_all_bitmap_candidates trims to 4 bytes assuming a
+        # bitmap. For arbitrary PIDs we want the full payload.
+        all_messages: list[bytes] = []
+        val = getattr(response, "value", None)
+        if isinstance(val, list):
+            for m in val:
+                data = getattr(m, "data", None)
+                if isinstance(data, (bytes, bytearray)):
+                    all_messages.append(bytes(data))
+        for msg in getattr(response, "messages", []) or []:
+            data = getattr(msg, "data", None)
+            if isinstance(data, (bytes, bytearray)):
+                all_messages.append(bytes(data))
+        if not all_messages and candidates:
+            all_messages = candidates
+        if not all_messages:
+            return None
+        # Strip the 0x41 + PID echo prefix if present.
+        raw = all_messages[0]
+        if len(raw) >= 2 and raw[0] == (0x40 | mode):
+            raw = raw[2:]
+        if not raw:
+            return None
+        hex_str = raw.hex().upper()
+        return LiveSample(
+            pid=pid,
+            name=f"raw {pid}",
+            value=f"raw:{hex_str}",
+            unit=None,
+        )
 
     def stream_pids(self, pids: Iterable[str]) -> Iterable[LiveSample]:
         pids = list(pids)

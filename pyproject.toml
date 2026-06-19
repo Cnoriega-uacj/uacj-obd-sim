@@ -1,6 +1,6 @@
 [project]
 name = "uacj-obd-sim"
-version = "0.6.12"
+version = "0.6.13"
 description = "OBD-II training simulator for UACJ — acquisition, storage, modification, and replay"
 requires-python = ">=3.11"
 authors = [{ name = "Azamat Hakimov" }]

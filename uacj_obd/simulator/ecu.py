@@ -28,6 +28,7 @@ from .encoders import (
     encodable_pids,
     encode_mfg_pid,
     encode_pid,
+    is_answerable,
     supported_pid_bitmap,
 )
 
@@ -468,7 +469,14 @@ class EcuEmulator:
         pid = args[0]
         # Supported PID bitmap groups: 0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0
         if pid in (0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0):
-            answerable = encodable_pids() & self.state.supported_pid_keys()
+            # v0.6.13: a key is answerable if either (a) a formula encoder
+            # exists for it OR (b) its stored value is a "raw:HEX" marker
+            # captured from a PID python-obd couldn't decode. The bitmap
+            # reflects what the simulator will actually answer.
+            answerable = {
+                k for k in self.state.supported_pid_keys()
+                if is_answerable(k, self.state.live.get(k))
+            }
             bitmap = supported_pid_bitmap(answerable, pid)
             return bytes([0x41, pid]) + bitmap
 

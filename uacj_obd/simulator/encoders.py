@@ -309,13 +309,44 @@ _ENCODERS: dict[str, Callable[..., bytes]] = {
 }
 
 
+_RAW_PREFIX = "raw:"
+
+
+def _try_raw_passthrough(value) -> bytes | None:
+    """
+    v0.6.13: if `value` is a raw-bytes marker captured from a PID
+    python-obd couldn't decode, return the raw response bytes for
+    direct pass-through. The marker is `"raw:HEXHEX..."` — a string
+    we control end-to-end (capture writes it, simulator parses it),
+    so no risk of a numeric value being mis-classified as raw.
+    """
+    if not isinstance(value, str) or not value.startswith(_RAW_PREFIX):
+        return None
+    hex_part = value[len(_RAW_PREFIX):].strip()
+    if not hex_part:
+        return None
+    try:
+        return bytes.fromhex(hex_part)
+    except ValueError:
+        return None
+
+
 def encode_pid(pid_key: str, value: float | int | str | None) -> bytes | None:
     """
     Encode a value to the response bytes for the given PID.
     Returns None when the PID is not encodable by this module.
+
+    v0.6.13: a value shaped like `"raw:HEX"` bypasses the formula
+    encoders and returns the bytes directly — used for PIDs the
+    capture pipeline read as raw bytes because python-obd had no
+    decoder. This lets the simulator answer ANY PID the real car
+    answered, even ones the codebase doesn't have a formula for.
     """
     if value is None:
         return None
+    raw = _try_raw_passthrough(value)
+    if raw is not None:
+        return raw
     enc = _ENCODERS.get(pid_key.upper())
     if enc is None:
         return None
@@ -323,6 +354,19 @@ def encode_pid(pid_key: str, value: float | int | str | None) -> bytes | None:
         return enc(value)
     except Exception:
         return None
+
+
+def is_answerable(pid_key: str, value) -> bool:
+    """
+    True when the simulator can produce a response for this PID with
+    the given stored value — either via a registered formula encoder
+    or via raw-bytes pass-through (v0.6.13).
+    """
+    if value is None:
+        return False
+    if _try_raw_passthrough(value) is not None:
+        return True
+    return pid_key.upper() in _ENCODERS
 
 
 def supported_pid_bitmap(pids: set[str], group: int) -> bytes:

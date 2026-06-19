@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.6.13 — 2026-06-19
+
+**Raw-bytes capture and replay.** v0.6.12 widens PID discovery to
+44; v0.6.13 closes the other side of the gap by capturing PIDs
+python-obd has no decoder for as raw response bytes, and letting
+the simulator replay them verbatim. Combined, the two releases
+should take the simulator from "10 PIDs" to "everything the real
+car answered" without per-PID engineering.
+
+### How it works
+
+1. **Capture side (Elm327Adapter):** `read_pid()` falls back to a
+   new `_read_pid_raw()` whenever python-obd can't decode the PID
+   (no command in the table, query exception, or null response).
+   `_read_pid_raw()` synthesises an `OBDCommand` with a `noop`
+   decoder, queries the ECU, strips the `41 XX` echo prefix, and
+   returns a `LiveSample` with `value="raw:<HEX>"`.
+
+2. **Wire format:** the `"raw:HEX"` string passes through the
+   existing `LiveSample.value: str | int | float` field unchanged
+   — no model migration. It survives `live_data.jsonl`,
+   `live_baseline`, the push, and `scenario_to_state`.
+
+3. **Simulator side (encoders):** `encode_pid()` recognises the
+   marker before consulting the formula registry. `is_answerable`
+   is the canonical "can this PID be served from state.live?"
+   check — used by Mode 01 PID 0x00 to derive the supported-PID
+   bitmap so it reflects what the simulator will actually return.
+   Raw markers take priority over formula encoders for the same
+   PID, letting a scenario override a known formula with bytes
+   from a real capture.
+
+### Defensive measures
+
+- Raw fallback only fires for Mode 01 — Modes 09 / 02 / 03 / 04
+  have dedicated paths and shouldn't get a synthesised command.
+- Empty or invalid `raw:` payloads (no hex chars, odd length,
+  non-hex chars) return None and don't crash the bitmap or
+  response builders.
+- Numeric values for unknown PIDs still return None — we don't
+  invent bytes for PIDs we genuinely can't answer.
+- Whitespace inside the hex string is tolerated (some chips emit
+  space-separated hex through `noop`).
+- Disconnected adapter / missing python-obd / query exception
+  return None cleanly.
+
+### Tests
+
+`tests/test_raw_passthrough_v0613.py` — 25 tests covering the
+passthrough decoder (uppercase / lowercase / empty / invalid /
+non-string / whitespace), encode_pid raw path (unknown PID,
+formula override, numeric fallthrough), is_answerable (formula,
+raw, neither, none, invalid raw), Mode 01 bitmap inclusion +
+exclusion + PID answer, Elm327Adapter._read_pid_raw (happy path,
+null response, mode-09 skip, echo-prefix stripping,
+disconnected), and an end-to-end round-trip through
+scenario_to_state confirming raw PIDs land in state.live and the
+ECU answers them with the captured bytes.
+
+**631 tests pass.**
+
 ## 0.6.12 — 2026-06-19
 
 **Raw supported-PID bitmap probe.** v0.6.11's diagnostics will
