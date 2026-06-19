@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.5.4 — 2026-06-19
+
+**Scenario-editor quick-setup buttons for monitors.** Last item from
+Cristopher's punch list: "doesn't show CCM and EGR even if I input
+them manually." The dashboard's monitor table only renders entries
+already in `active.monitors` — if the captured session never received
+monitor info from the ECU (some adapters don't return Mode 01 PID
+0x01 reliably), the table is empty and there's no obvious way for the
+instructor to add the standard 11 monitors by name.
+
+### Three new buttons above the monitor table
+
+- **Set up standard monitors** — populates the 11 standard SAE J1979
+  monitors in their canonical order, with sensible defaults
+  (Misfire/Fuel/CCM/Catalyst/HCAT/EVAP/O2/HTR/EGR supported and
+  ready; Secondary Air + A/C Refrigerant unsupported because most
+  modern vehicles don't have either).
+- **All ready** — marks every currently-listed monitor as supported
+  AND ready. Useful for the "healthy vehicle" baseline scenario.
+- **All incomplete** — marks every currently-listed monitor as
+  supported but NOT ready. Mirrors the "DTCs were just cleared"
+  state — drive-cycle pending.
+
+The buttons mutate the in-memory scenario; the instructor still has
+to click Save to persist.
+
+### Tests prevent JS ↔ simulator drift
+
+The 11 monitor names in the JS `STANDARD_MONITORS` array MUST match
+the keys the simulator's `_MONITOR_NAME_TO_POSITION` recognises —
+otherwise the bit-packing silently drops monitors and the Innova
+hides badges (exactly the bug Cristopher chased for hours on
+v0.4.5). 5 new tests in `tests/test_v054_monitor_quick_setup.py`:
+
+1. Every name in the Python source-of-truth list is in
+   `_MONITOR_NAME_TO_POSITION`.
+2. The 11-monitor preset packs into the expected J1979 byte
+   patterns (continuous supported/complete, CAT through EGR
+   supported, AIR + A/C unsupported, byte D zero).
+3. The JS file actually contains every expected monitor name —
+   if you edit the Python source-of-truth without updating the JS,
+   this fails.
+4. "All ready" button semantics produce byte B upper nibble = 0
+   AND byte D = 0.
+5. "All incomplete" button semantics produce byte D = byte C
+   exactly (every supported monitor also not-complete).
+
+Total tests 288 → 293. No regressions.
+
+### Why it took until v0.5.4 to add this
+
+v0.4.5 fixed the encoder so MANUAL monitor entries with the right
+names would encode correctly. But "the right names" was implicit
+knowledge the instructor had to know. v0.5.4 makes that knowledge
+explicit (in the JS preset) AND enforced by tests (so it can't drift).
+
 ## 0.5.3 — 2026-06-19
 
 **Dashboard show-all-captured-PIDs toggle + capture all by default.**

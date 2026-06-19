@@ -108,6 +108,20 @@
       </div>
 
       <h2>Monitors</h2>
+      <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap;">
+        <button id="monitors-fill-standard" class="secondary" type="button"
+                title="Populate the 11 standard SAE J1979 monitors, all supported + ready. Useful when the captured session didn't include monitor info.">
+          Set up standard monitors
+        </button>
+        <button id="monitors-all-ready" class="secondary" type="button"
+                title="Mark all current monitors as supported AND ready (healthy vehicle).">
+          All ready
+        </button>
+        <button id="monitors-all-incomplete" class="secondary" type="button"
+                title="Mark all current monitors as supported but NOT ready (recently cleared codes — drive cycle needed).">
+          All incomplete
+        </button>
+      </div>
       <table>
         <thead><tr><th>Monitor</th><th>Supported</th><th>Ready</th></tr></thead>
         <tbody id="monitors-tbl"></tbody>
@@ -209,6 +223,23 @@ function renderDtcs() {
     b.onclick = () => { active.dtcs.splice(+b.dataset.rmDtc, 1); renderDtcs(); };
 }
 
+// v0.5.4: the 11 standard SAE J1979 monitors. Names MUST match the
+// keys the simulator's `_MONITOR_NAME_TO_POSITION` recognises in
+// can_runtime.py — otherwise the bit packing silently drops them.
+const STANDARD_MONITORS = [
+  { name: "Misfire",                  supported: true,  ready: true  },
+  { name: "Fuel System",              supported: true,  ready: true  },
+  { name: "Comprehensive Components", supported: true,  ready: true  },
+  { name: "Catalyst",                 supported: true,  ready: true  },
+  { name: "Heated Catalyst",          supported: true,  ready: true  },
+  { name: "Evaporative System",       supported: true,  ready: true  },
+  { name: "Secondary Air System",     supported: false, ready: false },
+  { name: "A/C System Refrigerant",   supported: false, ready: false },
+  { name: "Oxygen Sensor",            supported: true,  ready: true  },
+  { name: "Oxygen Sensor Heater",     supported: true,  ready: true  },
+  { name: "EGR System",               supported: true,  ready: true  },
+];
+
 function renderMonitors() {
   $("monitors-tbl").innerHTML = (active.monitors || []).map((m, i) =>
     `<tr><td>${m.name}</td>
@@ -236,6 +267,31 @@ $("dtc-add").onclick = () => {
   active.dtcs.push({ code, status: $("dtc-status").value, description: $("dtc-desc").value });
   $("dtc-code").value = $("dtc-desc").value = "";
   renderDtcs();
+};
+
+// v0.5.4: monitor quick-action buttons.
+$("monitors-fill-standard").onclick = () => {
+  // Deep-copy the standard set so subsequent toggles don't mutate the
+  // shared constant. JSON round-trip is fine — these are small dicts.
+  active.monitors = JSON.parse(JSON.stringify(STANDARD_MONITORS));
+  renderMonitors();
+  setStatus("standard monitors set — remember to Save");
+};
+
+$("monitors-all-ready").onclick = () => {
+  for (const m of (active.monitors || [])) {
+    m.supported = true;
+    m.ready = true;
+  }
+  renderMonitors();
+};
+
+$("monitors-all-incomplete").onclick = () => {
+  for (const m of (active.monitors || [])) {
+    m.supported = true;
+    m.ready = false;
+  }
+  renderMonitors();
 };
 
 $("ov-add").onclick = () => {
