@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.5.1 — 2026-06-18
+
+**Pi as standalone WiFi access point.** Client asked for the kit to
+work in places where there is no school WiFi or no internet — the
+parking lot, a shop bay, a remote training site. v0.5.1 turns the Pi
+into its own WiFi network so the laptop can connect to it directly,
+without any external infrastructure.
+
+### Two new shell scripts
+
+- **`scripts/setup_pi_hotspot.sh`** — idempotent installer. Run once
+  on the Pi as root. Installs hostapd + dnsmasq, writes their
+  configs, configures static IP on wlan0, enables/starts both
+  services. Defaults to SSID `UACJ-SIM`, password `uacj1234`, Pi IP
+  `192.168.50.1`, DHCP pool `192.168.50.10-50`. Override any of those
+  via environment variables (e.g. `UACJ_AP_SSID=Custom UACJ_AP_PASS=...`).
+
+- **`scripts/revert_pi_hotspot.sh`** — restores the pre-AP-mode
+  configs from a backup directory the setup script created. Returns
+  the Pi to client-mode WiFi (joining whatever wpa_supplicant
+  configures). Idempotent.
+
+The setup script wraps its dhcpcd block in marker comments so the
+revert script can strip exactly that block without touching anything
+else in dhcpcd.conf.
+
+### New `uacj_obd.pi_hotspot` Python module
+
+The bash scripts are operator-facing; the Python module is the
+testable layer. `HotspotSettings` dataclass holds every knob, with
+constructor-time validation:
+
+- WPA2 passphrase length 8-63 chars (raises ValueError otherwise)
+- 2.4 GHz channel range 1-14
+- ISO 3166-1 alpha-2 country code (exactly 2 letters)
+- SSID length 1-32 chars
+
+`render_hostapd_conf()` / `render_dnsmasq_conf()` /
+`render_dhcpcd_block()` return the exact text those config files
+should contain. Plus `dashboard_url_for_clients()` — small helper for
+the future dashboard UI that will tell the instructor "your Pi
+broadcasts WiFi `X`, dashboard reachable at `Y`".
+
+### Tests
+
+20 new tests in `tests/test_pi_hotspot.py` covering:
+- Defaults match the bash script's defaults (lock-in)
+- WPA2 length / channel / country / SSID validation
+- hostapd.conf includes every required directive AND no WPA1/WEP
+- dnsmasq.conf binds to wlan0, advertises Pi as gateway + DNS
+- dhcpcd block has revert markers and disables wpa_supplicant hook
+- dashboard URL helper for default and custom ports
+
+Total tests: 242 → 262 (+20). No regressions.
+
+### New documentation
+
+`docs/wifi_hotspot.md` — complete walkthrough: defaults, setup,
+laptop connection flow, revert, troubleshooting table, network
+architecture diagram. Calls out the SSH-over-WiFi disconnect
+gotcha so operators don't get stranded mid-setup.
+
+### Combined with v0.5.0
+
+A captured Mazda3 drive can now run end-to-end in a field with zero
+external infrastructure:
+1. Pi boots, broadcasts `UACJ-SIM` WiFi.
+2. Laptop joins that WiFi, opens dashboard at localhost:8000.
+3. Push the Mazda3 scenario (with `replay: true`) to
+   `http://192.168.50.1:8765`.
+4. ReplayEngine animates the captured PIDs at original cadence.
+5. Student plugs Innova into the simulator board — sees a living,
+   breathing engine instead of static values.
+
+No school WiFi, no router, no internet. Truly portable kit.
+
 ## 0.5.0 — 2026-06-18
 
 **Dynamic time-series live-data replay.** Client requested this feature
