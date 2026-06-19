@@ -338,6 +338,13 @@ class ScenarioState:
     # Map of test_id (int) → (component_id, value, min, max).
     # Values are in raw 16-bit units; the dispatch packs them per SAE J1979 mode 0x06.
     obd_test_results: dict[int, tuple[int, int, int, int]] = field(default_factory=dict)
+    # v0.5.0: optional captured time-series for dynamic replay. When
+    # non-empty the simulator server runs a `ReplayEngine` that mutates
+    # `live` according to these samples at the recorded cadence. Type
+    # is `list[TimedSample]` (imported lazily to avoid a circular
+    # dependency between ecu.py and replay_engine.py).
+    live_timeseries: list = field(default_factory=list)
+    live_timeseries_loop: bool = True
 
     def supported_pid_keys(self) -> set[str]:
         """All PIDs we can answer mode 0x01 for, given the live data."""

@@ -212,6 +212,15 @@ def scenario_to_state(scenario_payload: dict, source_session: dict | None = None
         live.update({k.upper(): v for k, v in source_session["live_latest"].items()})
     live.update({k.upper(): v for k, v in (scenario_payload.get("live_overrides") or {}).items()})
 
+    # v0.5.0: optional time-series replay. The dashboard may attach a
+    # `live_timeseries` list (live_data.jsonl-shape entries) plus a
+    # `live_timeseries_loop` flag. If absent, fall through to the
+    # legacy static-value behaviour from v0.4.x.
+    from .replay_engine import _normalise_samples
+    timeseries_raw = scenario_payload.get("live_timeseries") or []
+    timeseries = _normalise_samples(timeseries_raw) if timeseries_raw else []
+    timeseries_loop = bool(scenario_payload.get("live_timeseries_loop", True))
+
     state = ScenarioState(
         vin=vehicle.get("vin"),
         calibration_id=vehicle.get("calibration_id"),
@@ -249,4 +258,8 @@ def scenario_to_state(scenario_payload: dict, source_session: dict | None = None
         state.monitor_b = byte_b
         state.monitor_c = byte_c
         state.monitor_d = byte_d
+    # v0.5.0: stash the time-series + loop flag on the state so the
+    # simulator server can spin up a ReplayEngine after `load()`.
+    state.live_timeseries = timeseries
+    state.live_timeseries_loop = timeseries_loop
     return state

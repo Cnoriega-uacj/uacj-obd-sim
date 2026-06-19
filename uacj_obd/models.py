@@ -86,5 +86,11 @@ class Scenario(BaseModel):
     monitors: list[Monitor] = Field(default_factory=list)
     freeze_frame: FreezeFrame | None = None
     live_overrides: dict[str, float | int | str] = Field(default_factory=dict)
+    # v0.5.0: when True, /api/scenarios/{id}/push attaches the captured
+    # session's full live time-series (from live_data.jsonl) as
+    # `live_timeseries` in the simulator payload, and the Pi-side
+    # `ReplayEngine` mutates state.live at the recorded cadence.
+    replay: bool = False
+    replay_loop: bool = True
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

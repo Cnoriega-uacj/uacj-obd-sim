@@ -1,5 +1,95 @@
 # Changelog
 
+## 0.5.0 — 2026-06-18
+
+**Dynamic time-series live-data replay.** Client requested this feature
+during on-site validation: when a captured session is pushed as a
+scenario, the simulator should play back the recorded RPM / speed /
+throttle / fuel-trim values as they changed over time, instead of
+freezing at one static value. v0.5.0 ships this end-to-end through the
+dashboard → simulator pipeline with no UI change required.
+
+### Pi-side replay engine
+
+New `uacj_obd/simulator/replay_engine.py` contains:
+
+- `TimedSample` — `(t_offset, pid_key, value)` dataclass for one
+  point on the replay timeline.
+- `_normalise_samples()` — converts wire-format dicts into normalised
+  `TimedSample` records. Accepts compact form
+  `{"t": 0.5, "pid": "010C", "value": 1500}`, LiveSample dump-shape
+  `{"ts": "2026-06-18T...", "pid": "...", "value": ...}` (ISO
+  timestamp), and out-of-order or partial entries (sorted and
+  filtered automatically).
+- `ReplayEngine` — background thread that mutates `state.live` at the
+  recorded cadence. Supports both `loop=True` (default — restarts
+  from beginning, ideal for classroom demos) and `loop=False` (one
+  pass). Also exposes a deterministic `step(current_time)` API for
+  tests that need to walk the timeline without real wall clock.
+
+The engine is the only producer mutating `state.live`. The ECU
+dispatcher remains pure read-from-state, so no locking is needed
+(single-key dict operations are atomic under CPython's GIL).
+
+### Pi-side server lifecycle
+
+`make_simulator_server()`:
+
+- Stops any previous engine before swapping state on `/api/sim/load`
+  (so old writes can never race with the new scenario's static
+  `live_overrides`).
+- Starts a new engine if the scenario carries `live_timeseries`.
+- Exposes `/api/sim/replay/stop` for the dashboard to halt replay
+  while keeping the most-recent values frozen on state.
+- Surfaces replay status in `/api/sim/state` — `running`,
+  `duration_seconds`, `samples_applied`, `iterations`, `loop`.
+
+### Dashboard opt-in
+
+Scenarios now carry `replay: bool` (default `False`) and
+`replay_loop: bool` (default `True`) fields on `Scenario` and
+`ScenarioCreateRequest`. When `replay=True`, `/api/scenarios/{id}/push`
+reads every line of the source session's `live_data.jsonl` and
+attaches the full time-series as `live_timeseries` in the payload.
+
+Defaults are preserved for v0.4.x compatibility — scenarios that don't
+opt in keep the static-value behaviour with no extra overhead.
+
+### Safety rails
+
+- `replay_max_samples` config field (default 50,000 ≈ 10 minutes of
+  100-PID capture) caps how many samples the dashboard ships per
+  push. Pathological captures can't blow the HTTP request size.
+- HTTP push timeout raised from 5 s to 10 s to accommodate a large
+  payload upload.
+- Time-series samples in a stopped/swapped scenario are dropped
+  cleanly — no leftover thread mutating the new state.
+
+### Tests
+
+- 20 unit tests in `tests/test_replay_engine.py` — normalisation
+  shapes, step API, thread lifecycle (start, stop, idempotent start,
+  prompt stop during long waits), loop vs non-loop behaviour, full
+  `scenario_to_state` integration, and the static-overrides-don't-get-
+  touched invariant.
+- 3 integration tests in `tests/test_v05_push_with_replay.py` — full
+  dashboard push endpoint, no-replay path leaves payload untouched,
+  replay path attaches the time-series, round-trip through
+  `scenario_to_state` produces a non-empty `ScenarioState.live_timeseries`.
+
+Total tests: 219 → 242 (+23).
+
+### What this enables for the client
+
+In the classroom, an instructor captures a 60-second drive of any car
+(idle → cruise → acceleration → brake → idle). Pushed with `replay:
+true`, the Innova then sees RPM, speed, MAF, throttle, and every other
+captured PID move exactly as the real car was moving. Loops
+indefinitely so a single capture drives a whole lecture.
+
+Static scenarios (P0420 frozen at idle for teaching catalyst
+diagnosis) keep working unchanged.
+
 ## 0.4.14 — 2026-06-18
 
 Extends the Pattern E symmetry recipe from v0.4.13 to Mode 06 (on-board

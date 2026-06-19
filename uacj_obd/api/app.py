@@ -46,6 +46,9 @@ class ScenarioCreateRequest(BaseModel):
     monitors: list[Monitor] = []
     freeze_frame: FreezeFrame | None = None
     live_overrides: dict[str, Any] = {}
+    # v0.5.0 — dynamic replay opt-in.
+    replay: bool = False
+    replay_loop: bool = True
 
 
 class ScenarioUpdateRequest(BaseModel):
@@ -54,6 +57,8 @@ class ScenarioUpdateRequest(BaseModel):
     monitors: list[Monitor] | None = None
     freeze_frame: FreezeFrame | None = None
     live_overrides: dict[str, Any] | None = None
+    replay: bool | None = None
+    replay_loop: bool | None = None
 
 
 def create_app(data_root: str | Path = "data") -> FastAPI:
@@ -217,6 +222,8 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
             monitors=req.monitors,
             freeze_frame=req.freeze_frame,
             live_overrides=req.live_overrides,
+            replay=req.replay,
+            replay_loop=req.replay_loop,
         )
         db.upsert_scenario(
             scenario_id=scenario_id,
@@ -329,6 +336,14 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         a live baseline; the scenario's live_overrides ride on top. This
         means the simulator answers every PID the original car answered,
         not just the ones the instructor explicitly modified.
+
+        v0.5.0: if the scenario opts in by setting `replay: true` in its
+        payload, the FULL captured time-series is shipped to the
+        simulator as `live_timeseries`. The Pi-side `ReplayEngine` then
+        mutates state.live at the recorded cadence — RPM bounces, speed
+        rises and falls, every value moves like the real car did during
+        capture. `replay_loop` (default true) controls whether the
+        timeline restarts after reaching the end.
         """
         scenario = db.get_scenario(scenario_id)
         if not scenario:
@@ -336,12 +351,19 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         payload = dict(scenario["payload"])
 
         source_id = payload.get("source_session_id")
+        replay_enabled = bool(payload.get("replay", False))
+        # v0.5.0: hard cap to keep pathological captures from blowing
+        # the HTTP request size. ~50k samples is roughly 10 min of
+        # 100-PID-per-cycle capture, far more than any classroom demo.
+        replay_max_samples = int(payload.get("replay_max_samples", 50_000))
+
         if source_id:
             source = db.get_session(source_id)
             if source:
                 live_path = Path(source["folder"]) / "live_data.jsonl"
                 if live_path.exists():
                     latest: dict[str, Any] = {}
+                    timeseries: list[dict[str, Any]] = []
                     with live_path.open() as fh:
                         for line in fh:
                             line = line.strip()
@@ -350,19 +372,34 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
                             obj = json.loads(line)
                             pid = obj.get("pid")
                             value = obj.get("value")
+                            ts = obj.get("ts")
                             if pid and value is not None:
                                 latest[pid] = value
+                                if replay_enabled and ts is not None:
+                                    if len(timeseries) >= replay_max_samples:
+                                        continue
+                                    timeseries.append({
+                                        "ts": ts,
+                                        "pid": pid,
+                                        "value": value,
+                                    })
                     payload["live_baseline"] = latest
+                    if replay_enabled:
+                        payload["live_timeseries"] = timeseries
+                        payload["live_timeseries_loop"] = bool(
+                            payload.get("replay_loop", True)
+                        )
 
         try:
             import httpx
 
-            with httpx.Client(timeout=5.0) as client:
+            with httpx.Client(timeout=10.0) as client:
                 r = client.post(f"{sim_url.rstrip('/')}/api/sim/load", json=payload)
                 r.raise_for_status()
                 return {
                     "pushed": True,
                     "baseline_pids": len(payload.get("live_baseline") or {}),
+                    "replay_samples": len(payload.get("live_timeseries") or []),
                     "sim_response": r.json(),
                 }
         except Exception as exc:
