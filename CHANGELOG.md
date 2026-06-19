@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.6.0 — 2026-06-19
+
+**Hardening pass for the v0.5.5 audit's deferred coverage items.**
+Three more modules lifted to high coverage by exercising user-facing
+methods with deterministic fixtures (no hardware required).
+
+### Coverage improvements
+
+| Module | v0.5.5 | v0.6.0 |
+|--------|--------|--------|
+| `storage/session_store.py` | 61% | **100%** |
+| `simulator/kline_runtime.py` | 44% | **89%** |
+| `adapters/factory.py` | 33% | **100%** |
+| **Project total** | 79% | **82%** |
+
+### `tests/test_session_store_v060.py` (+16 tests)
+
+Closes every uncovered path in the session storage layer:
+
+- `SessionStore.list_session_dirs` — empty store, one session, stray
+  non-directory files at the root, multiple vehicles.
+- `SessionWriter.write_samples` — bulk write returns the right count;
+  empty iterable returns 0.
+- `SessionWriter.write_raw` — appends timestamped lines, accepts
+  arbitrary string payloads.
+- `SessionWriter.export_csv` — round-trips live samples, tolerates
+  blank lines in the source JSONL, header-only on empty sessions.
+- `SessionWriter.export_json` — bundles metadata + live data + DTCs +
+  monitors + freeze frame into a single dictionary; correctly omits
+  missing pieces; `write_freeze_frame(None)` is a clean no-op.
+
+### `tests/test_kline_runtime_v060.py` (+13 tests)
+
+Exercises the K-Line UART runtime with a `FakeSerial` (deque-backed
+duck-typed pyserial substitute, no hardware needed):
+
+- `handle_request_bytes` — Mode 09 PID 02 round-trip, invalid frames
+  return empty, NRC payloads still wrap correctly.
+- `_read_one_frame` — empty UART returns None, 5-baud slow-init
+  address (0x33) triggers handshake reply, ~KB2 inverse byte handled,
+  full frames assembled correctly, long-form frames with separate
+  length byte handled.
+- `run()` blocking loop — responds to requests in a thread, recovers
+  from UART read errors, survives UART write errors without crashing,
+  stops promptly when idle.
+- `open_serial()` raises a helpful RuntimeError when pyserial isn't
+  installed.
+
+### `tests/test_factory_v060.py` (+8 tests)
+
+Covers `open_adapter()`'s dispatch logic:
+
+- `"mock"` returns MockAdapter; kwargs pass through to the constructor.
+- Kind matching is case-insensitive (`"MOCK"`, `"Mock"`, `"mock"`).
+- Unknown kinds raise a clean `ValueError` with the right message.
+- `"elm327"` / `"stn2120"` / `"real"` all alias to `Elm327Adapter`
+  (3 separate construction calls verified).
+- `"replay"` returns ReplayAdapter from a real on-disk session
+  directory.
+- `"auto"` falls back to MockAdapter when ELM327 construction raises
+  (mocked: no hardware needed).
+- `"auto"` uses ELM327 when construction succeeds.
+
+### Remaining lower-coverage modules (truly hardware-dependent)
+
+| Module | Coverage | Why |
+|--------|----------|-----|
+| `adapters/elm327.py` | 37% | Path through python-obd + real serial. Covered by on-site integration on the client's Mazda3. |
+| `simulator/j1850_runtime.py` | 60% | J1850 transceiver is optional add-on; covered by virtual-bus bench harness. |
+| `cli.py` | 68% | Remaining 32% is `serve` / `simulator` long-running server bodies, exercised by the FastAPI-level tests. |
+| `acquisition/session.py` | 76% | Error-recovery branches need PTY-based testing scaffolding (planned for v0.6.x continuation). |
+
+Total tests 315 → 352 (+37). No regressions.
+
 ## 0.5.5 — 2026-06-19
 
 **Audit-driven test coverage release.** Ran `pytest --cov` over the
