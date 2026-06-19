@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.5.5 — 2026-06-19
+
+**Audit-driven test coverage release.** Ran `pytest --cov` over the
+whole project to surface coverage gaps that the on-site bug pattern
+would have classified as Pattern A risk (untested code paths can
+break silently). Two modules had **0% coverage** despite being on
+the critical path; this release closes both gaps to **100%** and
+**68%** respectively, lifting overall project coverage from 74% to
+79% and total tests from 293 to 315.
+
+### Critical gap #1: `simulator/server.py` (0% → 100%)
+
+The FastAPI app running on the Pi to receive `/api/sim/load` from
+the dashboard had zero direct tests. `scenario_to_state` and
+`EcuEmulator` were heavily tested in isolation; the HTTP routes that
+glue them together were not. A silent regression in `/api/sim/load`
+(e.g. v0.5.0's ReplayEngine wiring) would have shipped without any
+test failing.
+
+11 new tests in `tests/test_simulator_server_v055.py`:
+- `/api/sim/health` returns ok with default state
+- `/api/sim/state` returns the full snapshot including replay sub-dict
+- `/api/sim/load` with VIN updates ECU state
+- `/api/sim/load` with `live_timeseries` starts the replay engine
+- Loading a second scenario STOPS the previous replay (v0.5.0
+  no-race invariant)
+- Empty payload doesn't crash
+- `/api/sim/clear` clears DTCs
+- `/api/sim/replay/stop` when nothing running is clean
+- `/api/sim/log` returns empty list on fresh ECU
+- ECU requests populate the log
+- `?limit=N` parameter respected
+
+### Critical gap #2: `cli.py` (0% → 68%)
+
+The click-based CLI is the entry point Cristopher actually invokes
+(`uacj-obd serve`, `uacj-obd simulator`, `uacj-obd capture`). Zero
+tests meant a silent break in argument parsing or subcommand
+dispatch would only be caught after deploy.
+
+11 new tests in `tests/test_cli_v055.py`:
+- Help text is available at every level
+- `capture --adapter mock` runs end-to-end and persists a session
+- `sessions`, `vehicles`, `pids` subcommands exist or fail cleanly
+- `serve --help` and `simulator --help` work
+- `-v` verbose flag accepted
+- `--data` creates the directory tree lazily
+
+The remaining 32% is the `serve` and `simulator` command bodies
+which would start long-running servers — exercised at runtime via
+the existing FastAPI-level tests, not the CLI shell.
+
+### Remaining coverage gaps (deferred)
+
+| Module | Coverage | Why deferred |
+|--------|----------|--------------|
+| `adapters/elm327.py` | 37% | Hardware-dependent paths; covered by integration testing on the client's actual Mazda3. |
+| `adapters/factory.py` | 33% | `open_adapter("auto")` requires hardware probing. |
+| `simulator/kline_runtime.py` | 44% | K-Line is a real protocol but the runtime wrapper needs PTY-based testing scaffolding to exercise without hardware. |
+| `simulator/j1850_runtime.py` | 60% | J1850 transceiver is optional add-on; runtime is partially covered by virtual-bus bench tests. |
+| `storage/session_store.py` | 61% | Backup/restore filesystem paths need temp-dir fixtures; v0.6.x cleanup. |
+
+These are tracked for v0.6.0 hardening pass.
+
+### Project-wide audit conclusions
+
+- No TODO / FIXME / XXX / HACK markers in the codebase (`grep -rn`).
+- No circular imports (Python startup clean).
+- Pattern E symmetry tests for Mode 06 and Mode 09 in place.
+- Pattern C `_decode_string_response` / `_clean_ascii_field` applied
+  at every adapter boundary identified in the v0.4.11 sweep.
+
+Total tests: 293 → 315. No regressions. Coverage 74% → 79%.
+
 ## 0.5.4 — 2026-06-19
 
 **Scenario-editor quick-setup buttons for monitors.** Last item from
