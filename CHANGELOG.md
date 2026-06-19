@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.6.1 — 2026-06-19
+
+**Continued hardening pass.** Two more modules lifted to high coverage,
+keeping the same v0.6.0 strategy: exercise user-facing methods + every
+defensive error path with deterministic fixtures, no hardware required.
+
+### Coverage improvements
+
+| Module | v0.6.0 | v0.6.1 |
+|--------|--------|--------|
+| `acquisition/session.py` | 76% | **86%** |
+| `simulator/j1850_runtime.py` | 60% | **98%** |
+| **Project total** | 82% | **84%** |
+
+### `tests/test_acquisition_v060.py` (+14 tests)
+
+Covers the `AcquisitionSession`'s defensive paths with a `BadAdapter`
+whose individual methods can be configured to raise `AdapterError`:
+
+- `_capture_static` independently tolerates DTC / monitor / freeze
+  frame read failures (4 tests; each failure mode is its own test
+  + a combined-failures test).
+- `_connect` raises `AdapterError` when status says not connected.
+- `run()` called without `start()` raises `RuntimeError`.
+- `run()` falls back to the curated 14-PID list when adapter
+  reports zero supported PIDs OR when `supported_pids()` raises.
+- `run()` recovers from `AdapterError` mid-loop via reconnect with
+  capped exponential backoff.
+- `run()` stops when `max_reconnects` is exceeded (vs. spinning
+  forever).
+- `stop()` signal breaks the loop promptly.
+- `_read_manufacturer_pid` returns None for: missing registry,
+  unknown PID, adapter error during `read_raw`.
+
+### `tests/test_j1850_runtime_v060.py` (+12 tests)
+
+Same pattern as the K-Line runtime tests in v0.6.0. A deque-backed
+`FakePort` substitutes for an MC33390-style transceiver:
+
+- `handle_request_bytes` Mode 09 round-trip (VIN reassembled from
+  segmented multi-frame response), invalid frames return empty,
+  NRC payloads still wrap.
+- `_read_one_frame` empty port, complete frame assembly, partial
+  frame on idle timeout.
+- `run()` loop responds in a thread, recovers from read/write
+  errors, stops promptly when idle.
+- Custom `source_address` honoured; default is `SRC_ECU_DEFAULT`.
+
+### Remaining lower-coverage modules
+
+| Module | Coverage | Path forward |
+|--------|----------|--------------|
+| `adapters/elm327.py` | 37% | Hardware-dependent; covered by on-site integration. |
+| `cli.py` | 68% | Remaining 32% is `serve`/`simulator` long-running server bodies; FastAPI-level tests already exercise the underlying logic. |
+| `api/app.py` | 85% | Remaining 15% is rarely-hit error branches and a few admin endpoints. |
+| `simulator/encoders.py` | 83% | Edge-case formulas in newer PID encoders; not yet exercised by every direction. |
+
+Total tests 352 → 378 (+26). No regressions. Project coverage 82% → 84%.
+
 ## 0.6.0 — 2026-06-19
 
 **Hardening pass for the v0.5.5 audit's deferred coverage items.**
