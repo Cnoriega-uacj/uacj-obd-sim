@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.4.14 — 2026-06-18
+
+Extends the Pattern E symmetry recipe from v0.4.13 to Mode 06 (on-board
+monitoring test results). Pattern E is now architecturally impossible
+to recur in either Mode 09 or Mode 06.
+
+### Mode 06 supported-MIDs bitmap
+
+Per SAE J1979, Mode 06 TIDs 0x00 / 0x20 / 0x40 / 0x60 / 0x80 / 0xA0 /
+0xC0 / 0xE0 are the "supported MIDs" range bitmaps strict scan tools
+query first. Each returns a 4-byte bitmap advertising which of the
+next 32 MIDs are supported.
+
+Previously the simulator NRC'd these bitmap TIDs because the
+dispatcher only knew about specific MIDs (or returned the bare
+service byte for unknown ones). Strict scan tools that respect the
+bitmap would never bother asking for any MID's actual data.
+
+Fix: `_mode06_supported_bitmap()` derives the bitmap dynamically from
+the keys of `state.obd_test_results` — the same source the dispatcher
+uses to answer individual MID queries. Adding a MID to the scenario
+automatically advertises it.
+
+### Mode 22 audit outcome
+
+Mode 22 (manufacturer-specific PIDs) was audited and does NOT need
+this treatment. Mode 22's PID space is 16-bit and manufacturer-
+defined; there is no standard "supported PIDs" structure to drift.
+The dispatcher already answers any PID in `state.live` and NRCs
+unknown ones — no static advertisement to keep in sync.
+
+### Five new symmetry tests for Mode 06
+
+Same pattern as the Mode 09 tests in v0.4.13:
+
+1. `test_mode06_bitmap_advertises_implemented_mids_in_range_0x00` —
+   bitmap at TID 0x00 matches configured MIDs in the 0x01-0x20 range.
+2. `test_mode06_bitmap_advertises_implemented_mids_in_range_0x20` —
+   same for the 0x21-0x40 range.
+3. `test_mode06_bitmap_empty_when_no_results_configured` — clean
+   "nothing supported" advertisement.
+4. `test_mode06_bitmap_symmetry_for_every_advertised_range` —
+   bitmap → advertised MIDs → dispatcher must answer each. Catches
+   "advertised but not implemented" drift.
+5. `test_mode06_dispatcher_matches_state_obd_test_results` —
+   configured MIDs → at least one bitmap range must advertise each.
+   Catches "implemented but not advertised" drift.
+
+Total tests: 214 → 219.
+
+### Pattern E status after v0.4.14
+
+| Mode | Pattern E status |
+|------|------------------|
+| Mode 01 | Already had dynamic bitmap (pre-existing). |
+| Mode 06 | **Eliminated v0.4.14.** Dynamic bitmap + 5 symmetry tests. |
+| Mode 09 | **Eliminated v0.4.13.** Dynamic bitmap + 5 symmetry tests. |
+| Mode 22 | Not applicable — no static advertisement to drift. |
+
+Drift can no longer ship silently for any mode that has an
+advertised "supported" list.
+
 ## 0.4.13 — 2026-06-18
 
 Eliminates the **Pattern E** root cause discovered while shipping

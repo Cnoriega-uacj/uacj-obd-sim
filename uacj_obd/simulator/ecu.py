@@ -202,6 +202,33 @@ def _clean_ascii_field(value) -> str:
     return text.strip()
 
 
+# v0.4.13: special TIDs that return the supported-MIDs bitmap for the
+# next 32 MIDs (instead of test result data). Same convention as Mode 01
+# PID 0x00 / 0x20 / 0x40 / ... — strict scan tools query these first.
+_MODE06_BITMAP_TIDS: frozenset[int] = frozenset({
+    0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0, 0xE0,
+})
+
+
+def _mode06_supported_bitmap(implemented_mids: set[int], start_tid: int) -> bytes:
+    """Build the 4-byte supported-MIDs bitmap for Mode 06 starting at
+    `start_tid`. Bit 7 of byte A = MID (start_tid+1); bit 0 of byte D =
+    MID (start_tid+32). The implemented set is the scenario's
+    `obd_test_results` keys — single source of truth, no drift risk."""
+    bitmap = 0
+    for mid in implemented_mids:
+        if start_tid < mid <= start_tid + 0x20:
+            offset = mid - start_tid  # 1..32
+            bit = 32 - offset
+            bitmap |= 1 << bit
+    return bytes([
+        (bitmap >> 24) & 0xFF,
+        (bitmap >> 16) & 0xFF,
+        (bitmap >> 8) & 0xFF,
+        bitmap & 0xFF,
+    ])
+
+
 # v0.4.13: single source of truth for "what Mode 09 PIDs the dispatcher
 # implements." The supported-PIDs bitmap (PID 0x00) is derived from
 # this set so it can never drift out of sync.
@@ -575,19 +602,32 @@ class EcuEmulator:
           0x06                     — return all configured tests (some tools
                                       send a bare 0x06 to enumerate)
 
-        Response layout:
+        Special TIDs (the "supported MIDs" bitmap pre-queries strict scan
+        tools issue before reading individual results — same shape as
+        Mode 01 PID 0x00):
+          0x00 / 0x20 / 0x40 / 0x60 / 0x80 / 0xA0 / 0xC0 / 0xE0
+          → 4-byte bitmap for the next 32 MIDs in that range, derived
+            dynamically from `self.state.obd_test_results` keys so there
+            is no Pattern-E drift between what we advertise and what the
+            dispatcher actually answers.
+
+        Response layout for a normal MID:
           0x46 [TID CID UASID Value(2) Min(2) Max(2)]*
 
         UASID (Unit and Scaling ID) is fixed to 0x00 for the simulator —
         scan tools that don't honour UASID will still display the raw 16-bit
         Value and bracket. Test IDs are scenario-defined; if the scenario
-        provides no results, we answer with an empty result set rather than
-        an NRC, mirroring vehicles where mode 06 is supported but the
-        monitor hasn't completed yet.
+        provides no results for a known MID, we answer with the service byte
+        alone (the "supported but no data" convention).
         """
         results = self.state.obd_test_results
         if args:
             tid = args[0]
+            # Supported-MIDs bitmap branch (Pattern E source-of-truth).
+            if tid in _MODE06_BITMAP_TIDS:
+                return bytes([0x46, tid]) + _mode06_supported_bitmap(
+                    set(results.keys()), tid
+                )
             entry = results.get(tid)
             if entry is None:
                 # No data for this TID — vehicles typically respond with the

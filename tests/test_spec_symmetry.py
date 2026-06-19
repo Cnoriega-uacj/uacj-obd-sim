@@ -24,7 +24,9 @@ a dispatcher branch, these tests fail loudly.
 from __future__ import annotations
 
 from uacj_obd.simulator.ecu import (
+    _MODE06_BITMAP_TIDS,
     _MODE09_IMPLEMENTED_PIDS,
+    _mode06_supported_bitmap,
     _mode09_supported_bitmap,
     EcuEmulator,
     ScenarioState,
@@ -125,3 +127,97 @@ def test_mode09_message_count_pids_return_one() -> None:
         assert resp[0] == 0x49, f"PID 0x{pid:02X} returned NRC"
         assert resp[1] == pid
         assert resp[2] == 0x01, f"PID 0x{pid:02X} should report 1 message"
+
+
+# ---------------------------------------------------------------------------
+# Mode 06 symmetry (v0.4.13 second sweep)
+# ---------------------------------------------------------------------------
+
+def _ecu_with_mode06_results() -> EcuEmulator:
+    """ECU configured with three Mode 06 test results across two
+    different MID ranges so the bitmap exercise has real data to
+    advertise."""
+    state = ScenarioState(
+        obd_test_results={
+            0x01: (0x0B, 0x0064, 0x0000, 0x00C8),  # MID 0x01 — O2 sensor B1S1
+            0x05: (0x0B, 0x0080, 0x0000, 0x00FF),  # MID 0x05 — O2 sensor B2S1
+            0x21: (0x0C, 0x0200, 0x0100, 0x0300),  # MID 0x21 — catalyst monitor
+        },
+    )
+    return EcuEmulator(state)
+
+
+def test_mode06_bitmap_advertises_implemented_mids_in_range_0x00() -> None:
+    """Bitmap TID 0x00 advertises MIDs 0x01-0x20. With test results
+    configured for MIDs 0x01 and 0x05, the bitmap must have bits 31
+    and 27 set (and nothing else in that range)."""
+    ecu = _ecu_with_mode06_results()
+    resp = ecu.handle(bytes([0x06, 0x00]))
+    assert resp[0] == 0x46
+    assert resp[1] == 0x00
+    bitmap = int.from_bytes(resp[2:6], "big")
+    # MID 0x01 → bit 31 (0x80000000); MID 0x05 → bit 27 (0x08000000)
+    expected = 0x80000000 | 0x08000000
+    assert bitmap == expected, (
+        f"Mode 06 bitmap (TID 0x00) drift: got 0x{bitmap:08X}, "
+        f"expected 0x{expected:08X}"
+    )
+
+
+def test_mode06_bitmap_advertises_implemented_mids_in_range_0x20() -> None:
+    """Bitmap TID 0x20 advertises MIDs 0x21-0x40. MID 0x21 is configured,
+    so bit 31 of that bitmap should be set."""
+    ecu = _ecu_with_mode06_results()
+    resp = ecu.handle(bytes([0x06, 0x20]))
+    bitmap = int.from_bytes(resp[2:6], "big")
+    assert bitmap == 0x80000000
+
+
+def test_mode06_bitmap_empty_when_no_results_configured() -> None:
+    ecu = EcuEmulator(ScenarioState())
+    resp = ecu.handle(bytes([0x06, 0x00]))
+    assert resp[2:6] == bytes([0, 0, 0, 0])
+
+
+def test_mode06_bitmap_symmetry_for_every_advertised_range() -> None:
+    """For every range bitmap TID, decoding the bitmap and looking up
+    each advertised MID in the dispatcher must return a positive
+    response. Catches any future Pattern E drift between the bitmap
+    derivation and the dispatcher behaviour."""
+    ecu = _ecu_with_mode06_results()
+    for tid in sorted(_MODE06_BITMAP_TIDS):
+        bitmap_resp = ecu.handle(bytes([0x06, tid]))
+        if bitmap_resp[0] == 0x7F:
+            continue  # range not relevant for this scenario, fine
+        bitmap = int.from_bytes(bitmap_resp[2:6], "big")
+        for offset in range(1, 0x21):
+            bit = 32 - offset
+            if not (bitmap & (1 << bit)):
+                continue
+            mid = tid + offset
+            # Advertised MID must produce a non-NRC response.
+            resp = ecu.handle(bytes([0x06, mid]))
+            assert resp[0] == 0x46, (
+                f"Mode 06 bitmap at TID 0x{tid:02X} advertises MID "
+                f"0x{mid:02X} but dispatcher NRCs it"
+            )
+
+
+def test_mode06_dispatcher_matches_state_obd_test_results() -> None:
+    """The reverse direction: every MID that the scenario configures
+    must be advertised by the appropriate bitmap. No 'works but not
+    advertised' silent gap."""
+    ecu = _ecu_with_mode06_results()
+    configured_mids = {0x01, 0x05, 0x21}
+    advertised_mids: set[int] = set()
+    for tid in sorted(_MODE06_BITMAP_TIDS):
+        bitmap_resp = ecu.handle(bytes([0x06, tid]))
+        bitmap = int.from_bytes(bitmap_resp[2:6], "big")
+        for offset in range(1, 0x21):
+            bit = 32 - offset
+            if bitmap & (1 << bit):
+                advertised_mids.add(tid + offset)
+    assert configured_mids.issubset(advertised_mids), (
+        f"Configured MIDs {configured_mids - advertised_mids} are not "
+        f"advertised by any bitmap range — Pattern E drift."
+    )
