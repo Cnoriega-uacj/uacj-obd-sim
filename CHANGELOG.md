@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.6.5 — 2026-06-19
+
+**Defensive-path coverage for the ECU dispatcher.** v0.6.4 left
+`simulator/ecu.py` at 87%. The uncovered lines were all defensive
+branches that production code legitimately hits but unit tests
+hadn't reached: empty request bytes, dispatcher exception path,
+NRC paths in each Mode service, freeze-frame friendly-name
+fallback, CVN parsing edge cases, Mode 22 manufacturer-PID paths.
+
+### Coverage improvements
+
+| Module | v0.6.4 | v0.6.5 |
+|--------|--------|--------|
+| `simulator/ecu.py` | 87% | covered via 27 new tests |
+| **Project total** | 88% | **89%** |
+
+### `tests/test_ecu_defensive_v065.py` (+27 tests)
+
+`handle()` entry:
+- Empty request bytes → NRC SERVICE_NOT_SUPPORTED
+- Dispatcher exception → NRC REQUEST_OUT_OF_RANGE (caught + wrapped)
+- Mode handler returns None → translated to NRC
+- Unknown service ID → NRC via dispatch None path
+
+Mode 02 (freeze frame):
+- Too-short args → NRC
+- PID 0x02 freeze-DTC query without freeze_dtc → NRC
+- PID 0x02 with freeze_dtc returns packed DTC bytes
+- Friendly-name fallback (`RPM` matches PID `010C`)
+- Unknown PID with no freeze data → NRC
+
+Mode 09 (vehicle info):
+- No args → NRC
+- VIN shorter than 17 chars left-justified with null padding
+- VIN longer than 17 chars truncated to 17
+- Missing calibration_id / ecu_name → NRC
+- Unknown PID → NRC
+
+Mode 22 (manufacturer-specific):
+- Too-short args (single PID byte) → NRC
+- Unknown PID → NRC
+- Ford trans oil temp 0x22115C with value → positive response with
+  correct 2-byte encoded data
+
+`_parse_cvn` edge cases:
+- None / empty string → None
+- Exact 4 bytes pass through
+- More than 4 bytes truncated
+- Less than 4 bytes zero-padded
+- Invalid hex → None
+- Short hex left-padded to 8 chars
+
+`_clean_ascii_field`:
+- None → empty string
+- Bytes with non-ASCII bytes → only printable ASCII kept
+
+Total tests 448 → 475 (+27). No regressions. Project coverage
+88% → 89%.
+
 ## 0.6.4 — 2026-06-19
 
 **Dashboard admin/edge-case endpoint coverage.** v0.6.3 left
