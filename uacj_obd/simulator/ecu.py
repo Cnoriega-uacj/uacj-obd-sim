@@ -202,6 +202,44 @@ def _clean_ascii_field(value) -> str:
     return text.strip()
 
 
+def _parse_cvn(value) -> bytes | None:
+    """
+    Parse a Calibration Verification Number into the 4 raw bytes the
+    scan tool expects on Mode 09 PID 0x06.
+
+    Accepts several shapes commonly seen on capture sources:
+      - "CDA08E85"        (8 hex chars, no separators)
+      - "CD A0 8E 85"     (space-separated bytes — Innova display style)
+      - "CD-A0-8E-85"     (dash-separated)
+      - "0xCDA08E85"      (with 0x prefix)
+      - bytes(b"\\xCD\\xA0\\x8E\\x85") (raw bytes pass-through)
+      - None / "" / unparseable → returns None (caller emits NRC)
+
+    Always returns exactly 4 bytes on success.
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        if len(value) == 4:
+            return bytes(value)
+        if len(value) > 4:
+            return bytes(value[:4])
+        return bytes(value).rjust(4, b"\x00")
+    text = _clean_ascii_field(value)
+    if not text:
+        return None
+    text = text.replace("0x", "").replace("0X", "")
+    text = text.replace(" ", "").replace("-", "").replace(":", "")
+    if len(text) < 8:
+        text = text.rjust(8, "0")
+    elif len(text) > 8:
+        text = text[:8]
+    try:
+        return bytes.fromhex(text)
+    except ValueError:
+        return None
+
+
 def _pack_dtc_list(dtcs: list[str]) -> bytes:
     """
     Mode 03/07/0A response data: count byte + 2 bytes per DTC.
@@ -222,6 +260,7 @@ class ScenarioState:
 
     vin: str | None = None
     calibration_id: str | None = None
+    cvn: str | None = None  # Calibration Verification Number, 4-byte hex (e.g. "CDA08E85")
     ecu_name: str | None = None
     live: dict[str, float | int | str] = field(default_factory=dict)
     dtcs_stored: list[str] = field(default_factory=list)
@@ -437,9 +476,17 @@ class EcuEmulator:
         if not args:
             return _negative(0x09, NRC_REQUEST_OUT_OF_RANGE)
         pid = args[0]
-        # PID 0x00: supported PIDs bitmap (we support 0x02 VIN, 0x04 cal id, 0x0A ECU name)
+        # PID 0x00: supported PIDs bitmap.
+        # Bit 7 of byte A = PID 1; bit 0 of byte A = PID 8; etc.
+        # Currently advertised: 0x02 (VIN), 0x04 (Cal ID), 0x06 (CVN), 0x0A (ECU name).
+        #   byte A = bits 6,4,2 set = 0x54  → PIDs 2, 4, 6
+        #   byte B = bit 6 set     = 0x40  → PID 10 (0x0A)
+        # v0.4.12: byte B now correctly advertises PID 0x0A. Previously
+        # the dispatcher answered PID 0x0A but did not list it in the
+        # supported bitmap — scan tools that strictly honour the bitmap
+        # would never even ask for the ECU name.
         if pid == 0x00:
-            return bytes([0x49, 0x00, 0x54, 0x00, 0x00, 0x00])
+            return bytes([0x49, 0x00, 0x54, 0x40, 0x00, 0x00])
         if pid == 0x02:
             vin = _clean_ascii_field(self.state.vin)
             if not vin:
@@ -457,6 +504,16 @@ class EcuEmulator:
                 return _negative(0x09, NRC_REQUEST_OUT_OF_RANGE)
             raw = cal.encode("ascii", errors="replace")[:16].ljust(16, b"\x00")
             return bytes([0x49, 0x04, 0x01]) + raw
+        if pid == 0x06:
+            # CVN — Calibration Verification Number. Per SAE J1979,
+            # one 4-byte hash per Cal ID. We store CVN as either an
+            # 8-char hex string ("CDA08E85") or a space-separated
+            # 4-byte form ("CD A0 8E 85"). Default to zero-CVN if
+            # the scenario does not carry one.
+            cvn_bytes = _parse_cvn(self.state.cvn)
+            if cvn_bytes is None:
+                return _negative(0x09, NRC_REQUEST_OUT_OF_RANGE)
+            return bytes([0x49, 0x06, 0x01]) + cvn_bytes
         if pid == 0x0A:
             name = _clean_ascii_field(self.state.ecu_name)
             if not name:

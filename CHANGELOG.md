@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.4.12 — 2026-06-18
+
+Adds Mode 09 PID 0x06 (CVN — Calibration Verification Number)
+support and fixes a related bitmap inconsistency. Surfaced when the
+client's Innova 5210 displayed his real 2012 Mazda3's CVN
+(`CD A0 8E 85`) and the simulator could not match it because the
+service wasn't implemented.
+
+### New: CVN (Mode 09 PID 0x06)
+
+- `ScenarioState.cvn` field added.
+- New `_parse_cvn` helper accepts CVN in every common shape:
+  - `"CDA08E85"` — 8 hex chars, no separators
+  - `"CD A0 8E 85"` — space-separated bytes (Innova display style)
+  - `"CD-A0-8E-85"` / `"CD:A0:8E:85"` — dash- or colon-separated
+  - `"0xCDA08E85"` — with hex prefix
+  - `bytes(b"\\xCD\\xA0\\x8E\\x85")` — raw bytes pass-through
+- Short values are zero-padded, long values are truncated to 4 bytes,
+  unparseable values return NRC. Always produces a well-formed 7-byte
+  response (0x49 0x06 0x01 + 4 bytes).
+- `scenario_to_state` now propagates the CVN field through the
+  capture → scenario → simulator pipeline.
+
+### Fix: Mode 09 PID 0x00 supported-PIDs bitmap
+
+The bitmap returned `0x54 0x00 0x00 0x00` — advertising PIDs 0x02
+(VIN), 0x04 (Cal ID), and 0x06 (CVN) but **not** PID 0x0A (ECU
+name). The dispatcher still answered PID 0x0A regardless, so the
+mismatch was silent on tolerant scan tools — but a strict scan tool
+that only queries advertised PIDs would never read the ECU name.
+
+Now byte B = 0x40 correctly advertises PID 0x0A.
+
+### Tests
+
+9 new tests:
+- 7 for CVN (round-trip, every accepted input shape, NRC paths,
+  short-value padding, invalid-char rejection)
+- 1 for the corrected supported-PIDs bitmap
+- 1 real-vehicle integration test using the client's actual Mazda3
+  values (VIN `JM1BL1L72C1627697`, Cal ID `PE2GEM000PE06020`, CVN
+  `CD A0 8E 85`, ECU `ECM`) — all four Mode 09 PIDs verified
+  end-to-end through `scenario_to_state` → `EcuEmulator`.
+
+Total tests 200 → 209.
+
 ## 0.4.11 — 2026-06-18
 
 **Audit-driven stabilization release.** The previous ten patches

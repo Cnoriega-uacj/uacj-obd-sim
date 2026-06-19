@@ -163,6 +163,78 @@ def test_mode04_clears_stored_and_pending_only() -> None:
     assert state.freeze_dtc is None  # we wipe freeze on clear; clarified in code
 
 
+def test_mode09_pid00_advertises_pids_2_4_6_and_0a() -> None:
+    """v0.4.12: the supported-PIDs bitmap must include every PID the
+    dispatcher actually answers. Previously bitmap was 0x54 0x00 0x00 0x00
+    (PIDs 2, 4, 6) but the dispatcher also answered 0x0A (ECU name).
+    Scan tools that strictly honour the bitmap never queried 0x0A.
+    Now byte B = 0x40 advertises PID 0x0A as well."""
+    ecu = _ecu()
+    resp = ecu.handle(bytes([0x09, 0x00]))
+    assert resp[:2] == bytes([0x49, 0x00])
+    assert resp[2] == 0x54  # PIDs 2, 4, 6 in byte A
+    assert resp[3] == 0x40  # PID 0x0A in byte B
+    assert resp[4] == 0x00
+    assert resp[5] == 0x00
+
+
+def test_mode09_pid06_cvn_round_trip_8char_hex() -> None:
+    """v0.4.12: CVN (Calibration Verification Number) support added."""
+    ecu = _ecu()
+    ecu.state.cvn = "CDA08E85"
+    resp = ecu.handle(bytes([0x09, 0x06]))
+    assert resp[:3] == bytes([0x49, 0x06, 0x01])
+    assert resp[3:] == bytes([0xCD, 0xA0, 0x8E, 0x85])
+
+
+def test_mode09_pid06_cvn_accepts_space_separated() -> None:
+    """The Innova displays CVN with spaces; the dashboard might capture
+    it that way verbatim. Accept both."""
+    ecu = _ecu()
+    ecu.state.cvn = "CD A0 8E 85"
+    resp = ecu.handle(bytes([0x09, 0x06]))
+    assert resp[3:] == bytes([0xCD, 0xA0, 0x8E, 0x85])
+
+
+def test_mode09_pid06_cvn_accepts_0x_prefix() -> None:
+    ecu = _ecu()
+    ecu.state.cvn = "0xCDA08E85"
+    resp = ecu.handle(bytes([0x09, 0x06]))
+    assert resp[3:] == bytes([0xCD, 0xA0, 0x8E, 0x85])
+
+
+def test_mode09_pid06_cvn_accepts_raw_bytes() -> None:
+    ecu = _ecu()
+    ecu.state.cvn = bytes([0xCD, 0xA0, 0x8E, 0x85])  # type: ignore[assignment]
+    resp = ecu.handle(bytes([0x09, 0x06]))
+    assert resp[3:] == bytes([0xCD, 0xA0, 0x8E, 0x85])
+
+
+def test_mode09_pid06_cvn_missing_returns_nrc() -> None:
+    ecu = _ecu()
+    # cvn unset → NRC
+    resp = ecu.handle(bytes([0x09, 0x06]))
+    assert resp[0] == 0x7F
+    assert resp[1] == 0x09
+
+
+def test_mode09_pid06_cvn_short_value_is_zero_padded() -> None:
+    """Defensive: a partial CVN like "85" still produces a valid 4-byte
+    response (zero-padded) rather than crashing or returning malformed."""
+    ecu = _ecu()
+    ecu.state.cvn = "85"
+    resp = ecu.handle(bytes([0x09, 0x06]))
+    assert len(resp) == 7  # 0x49 0x06 0x01 + 4 bytes
+    assert resp[3:] == bytes([0x00, 0x00, 0x00, 0x85])
+
+
+def test_mode09_pid06_cvn_invalid_chars_returns_nrc() -> None:
+    ecu = _ecu()
+    ecu.state.cvn = "not hex at all"
+    resp = ecu.handle(bytes([0x09, 0x06]))
+    assert resp[0] == 0x7F
+
+
 def test_mode09_vin_round_trip() -> None:
     ecu = _ecu(vin="2HGFC2F59FH123456")
     resp = ecu.handle(bytes([0x09, 0x02]))

@@ -215,6 +215,7 @@ def scenario_to_state(scenario_payload: dict, source_session: dict | None = None
     state = ScenarioState(
         vin=vehicle.get("vin"),
         calibration_id=vehicle.get("calibration_id"),
+        cvn=vehicle.get("cvn"),
         ecu_name=vehicle.get("ecu_name"),
         live=live,
         dtcs_stored=[d["code"] for d in scenario_payload.get("dtcs", []) if d.get("status") == "stored"],

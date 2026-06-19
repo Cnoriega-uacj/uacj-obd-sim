@@ -257,6 +257,48 @@ def test_full_mazda3_capture_every_pid_round_trips_or_nrcs_cleanly() -> None:
             assert resp[1] == pid_byte
 
 
+def test_real_mazda3_vehicle_id_round_trip_with_cvn() -> None:
+    """v0.4.12: real Mazda3 reported via Innova:
+        VIN:    JM1BL1L72C1627697
+        Cal ID: PE2GEM000PE06020
+        CVN:    CD A0 8E 85
+    All three should round-trip through scenario_to_state and emerge as
+    valid SAE J1979 Mode 09 responses."""
+    payload = {
+        "vehicle": {
+            "vin": "JM1BL1L72C1627697",
+            "make": "Mazda",
+            "model": "Mazda3",
+            "year": 2012,
+            "calibration_id": "PE2GEM000PE06020",
+            "cvn": "CD A0 8E 85",
+            "ecu_name": "ECM",
+        },
+    }
+    state = scenario_to_state(payload)
+    ecu = EcuEmulator(state)
+
+    # VIN (Mode 09 PID 02)
+    vin_resp = ecu.handle(bytes([0x09, 0x02]))
+    assert vin_resp[3:] == b"JM1BL1L72C1627697"
+
+    # Cal ID (Mode 09 PID 04)
+    cal_resp = ecu.handle(bytes([0x09, 0x04]))
+    assert cal_resp[3:].rstrip(b"\x00") == b"PE2GEM000PE06020"
+
+    # CVN (Mode 09 PID 06) — new in v0.4.12
+    cvn_resp = ecu.handle(bytes([0x09, 0x06]))
+    assert cvn_resp[3:] == bytes([0xCD, 0xA0, 0x8E, 0x85])
+
+    # ECU name (Mode 09 PID 0A)
+    name_resp = ecu.handle(bytes([0x09, 0x0A]))
+    assert name_resp[3:].rstrip(b"\x00") == b"ECM"
+
+    # Supported PIDs bitmap (Mode 09 PID 00) must now advertise all four
+    bitmap_resp = ecu.handle(bytes([0x09, 0x00]))
+    assert bitmap_resp[2:6] == bytes([0x54, 0x40, 0x00, 0x00])
+
+
 def test_v0_4_11_encoder_coverage_meets_mazda3_subset() -> None:
     """The encoder set must cover every PID in the real Mazda3 capture.
     If python-obd ever reports a PID that has no simulator encoder, we
