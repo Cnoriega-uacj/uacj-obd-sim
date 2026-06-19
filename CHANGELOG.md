@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.5.2 — 2026-06-19
+
+**Offline VIN → make / model year / region decoder.** Client
+captures repeatedly showed "Unknown vehicle" because the OBD-II VIN
+read often returns only the 17-character VIN itself — make, model,
+and year aren't on the wire. v0.5.2 derives the make / year /
+country-of-assembly from the VIN structure offline (no NHTSA call,
+no internet) and exposes them through new dashboard endpoints.
+
+### New `uacj_obd.vin_decoder` module
+
+- `decode_vin(vin)` → `VinDecodeResult` dataclass with `valid`,
+  `make`, `region`, `model_year`, `plant_code`, and `error`.
+- Validates VIN length (must be 17), allowed character set (ISO 3779
+  excludes I / O / Q), and reports clean errors.
+- WMI table covers ~85 manufacturer-region codes for the makes the
+  client will see in a Mexican automotive school: Honda, Toyota /
+  Lexus, Ford, GM (Chevrolet / GMC / Buick / Cadillac / Pontiac),
+  Mazda, Nissan, Hyundai, Kia, VW / Audi, BMW, Mercedes-Benz, Subaru,
+  Mitsubishi, Dodge / Ram / Chrysler / Jeep — across US / Canada /
+  Mexico / Japan / Korea / Germany / Brazil / Hungary build sites.
+- Model year decoding uses the ISO 3779 30-character ladder. Real
+  VIN data showed position 7 isn't a reliable second-cycle
+  disambiguator (different manufacturers used it differently), so the
+  decoder picks the most recent cycle that doesn't produce a future
+  year (a tool in 2026 reports 'A' as 2010, '8' as 2008, 'C' as 2012).
+
+### Two new endpoints on the dashboard
+
+- **`GET /api/vin/decode?vin=...`** — standalone decoder for the
+  scenario editor to auto-fill make/year fields when the user
+  pastes a VIN.
+- **`GET /api/vehicles`** is now enriched with `decoded_make`,
+  `decoded_year`, `decoded_region`, `vin_valid` fields per row. The
+  underlying database row is left untouched — the enrichment happens
+  at response time, so existing data benefits without any migration.
+
+### Tests
+
+23 new tests in `tests/test_vin_decoder.py`:
+- The client's actual Mazda3 VIN decodes to 2012 / Mazda / Japan
+- The mock Civic VIN decodes to 2015 / Honda / Canada
+- The Silverado smoke-test VIN decodes to 2008 / Chevrolet
+- Validation rejections for short / long / I-O-Q chars / None / empty
+- Year cycle disambiguation: 'A' picks 2010 not 1980, '8' picks 2008
+  not 2038
+- Unknown WMIs return None for make rather than guessing
+- Lowercase + whitespace tolerance
+- `/api/vin/decode` endpoint shape for valid + invalid VINs
+- `/api/vehicles` includes the decoded fields
+
+Total tests 262 → 285. No regressions.
+
+### What's still out of scope (NHTSA-territory)
+
+Model name, trim, engine, transmission. Those require the NHTSA vPIC
+database (~600 MB) or a paid lookup service. The kit is meant to work
+offline; bundling that dataset is v0.6.x scope if there's demand.
+
 ## 0.5.1 — 2026-06-18
 
 **Pi as standalone WiFi access point.** Client asked for the kit to

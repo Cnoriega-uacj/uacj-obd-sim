@@ -196,7 +196,41 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
 
     @app.get("/api/vehicles")
     def list_vehicles() -> list[dict]:
-        return db.list_vehicles()
+        """List captured vehicles. v0.5.2: each entry is enriched with
+        an offline-decoded `decoded_make` / `decoded_year` / `region`
+        if the VIN parses, so the dashboard shows useful info even
+        when the captured session never received make/model/year from
+        the ECU (some adapters don't populate those fields)."""
+        from uacj_obd.vin_decoder import decode_vin
+        out = []
+        for v in db.list_vehicles():
+            v = dict(v)
+            vin = v.get("vin")
+            if vin:
+                result = decode_vin(vin)
+                v["decoded_make"] = result.make
+                v["decoded_year"] = result.model_year
+                v["decoded_region"] = result.region
+                v["vin_valid"] = result.valid
+            out.append(v)
+        return out
+
+    @app.get("/api/vin/decode")
+    def decode_vin_endpoint(vin: str) -> dict:
+        """v0.5.2: standalone endpoint the dashboard can call from a
+        scenario editor to auto-fill make/year fields after the user
+        types or pastes a VIN."""
+        from uacj_obd.vin_decoder import decode_vin
+        result = decode_vin(vin)
+        return {
+            "vin": result.vin,
+            "valid": result.valid,
+            "make": result.make,
+            "region": result.region,
+            "model_year": result.model_year,
+            "plant_code": result.plant_code,
+            "error": result.error,
+        }
 
     # --- scenarios (modification) -------------------------------------
 
