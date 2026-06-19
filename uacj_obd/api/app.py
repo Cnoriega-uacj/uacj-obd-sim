@@ -463,6 +463,67 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
             raise HTTPException(404, "scenario not found")
         return row["payload"]
 
+    @app.get("/api/scenarios/{scenario_id}/coverage")
+    def scenario_coverage(scenario_id: str) -> dict:
+        """
+        v0.6.10: report what the simulator will actually answer for
+        this scenario. Resolves the source session's live_baseline
+        (the same merge `push_scenario` performs) and intersects with
+        the simulator's encoder registry. Surfaces:
+          - total PIDs in baseline
+          - mode-01 total + answerable + unanswered
+          - mode-09 vehicle-info coverage (vin / cal_id / cvn / ecu_name)
+          - per-PID name + answerable flag for instructor preview
+
+        The dashboard's scenario page calls this before push so the
+        instructor can confirm coverage (and catch the "Mazda3 capture
+        only has 10 mode-01 PIDs" question end-to-end instead of
+        guessing from the scan tool).
+        """
+        from uacj_obd.coverage import compute_coverage
+
+        row = db.get_scenario(scenario_id)
+        if not row:
+            raise HTTPException(404, "scenario not found")
+        payload = dict(row["payload"])
+
+        # Reproduce the source-session live_baseline merge that
+        # push_scenario does — coverage with no baseline would be
+        # uselessly pessimistic.
+        source_id = payload.get("source_session_id")
+        if source_id and not payload.get("live_baseline"):
+            source = db.get_session(source_id)
+            if source:
+                live_path = Path(source["folder"]) / "live_data.jsonl"
+                if live_path.exists():
+                    latest: dict[str, Any] = {}
+                    with live_path.open() as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            obj = json.loads(line)
+                            pid = obj.get("pid")
+                            value = obj.get("value")
+                            if pid and value is not None:
+                                latest[pid] = value
+                    payload["live_baseline"] = latest
+
+        report = compute_coverage(payload, pid_reg)
+        return {
+            "total_pids": report.total_pids,
+            "mode01_total": report.mode01_total,
+            "mode01_answerable": report.mode01_answerable,
+            "mode01_unanswered": report.mode01_unanswered,
+            "mode09_present": report.mode09_present,
+            "mode22_total": report.mode22_total,
+            "entries": [
+                {"key": e.key, "name": e.name, "unit": e.unit, "answerable": e.answerable}
+                for e in report.entries
+            ],
+            "notes": report.notes,
+        }
+
     @app.patch("/api/scenarios/{scenario_id}")
     def update_scenario(scenario_id: str, req: ScenarioUpdateRequest) -> dict:
         row = db.get_scenario(scenario_id)

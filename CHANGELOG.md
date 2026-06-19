@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.6.10 — 2026-06-19
+
+**Scenario coverage preview.** Cristopher's bench: the Mazda3
+reports "1/44 parameters" on the real car but only "1/10
+parameters" on the simulator after a push. Without a way to see
+inside the scenario, you can't tell whether 10 is what the capture
+landed, what the simulator can encode, or how the bitmap was
+derived.
+
+### New endpoint
+
+`GET /api/scenarios/{id}/coverage` reports what the simulator will
+actually answer for the scenario. Resolves the source session's
+`live_baseline` the same way `/push` does, intersects with the
+encoder registry, and returns:
+- `total_pids` — distinct PID keys after merging baseline +
+  overrides + timeseries
+- `mode01_total` / `mode01_answerable` / `mode01_unanswered` —
+  the captured-vs-encodable split that explains the bitmap
+- `mode09_present` — which Mode 09 vehicle-info PIDs will answer
+  (derived from `vehicle.{vin,calibration_id,cvn,ecu_name}`)
+- `mode22_total` — manufacturer PIDs in the baseline
+- `entries` — per-PID name, unit, answerable flag for the UI
+- `notes` — human-readable explanations of why fields will NRC
+
+### New module
+
+`uacj_obd/coverage.py` — pure helpers (`compute_coverage`,
+`PidEntry`, `CoverageReport`). No FastAPI dependency.
+
+### Dashboard
+
+New "Preview coverage" button on the scenario editor (sits next
+to "Push to board"). Pops up:
+```
+Total PIDs: 47
+Mode 01 PIDs: 38 captured, 38 answerable (0 no encoder)
+Mode 09 fields present: 0902, 0904, 0906, 090A
+Mode 22 (manufacturer) PIDs: 9
+
+Notes: (none)
+
+Mode 01 PIDs:
+  ✓ 010C Engine RPM (rpm)
+  ✓ 010D Vehicle Speed (km/h)
+  ...
+```
+
+### Tests
+
+`tests/test_coverage_v0610.py` — 13 tests covering empty payload,
+baseline/overrides/timeseries merging, unanswerable flagging,
+key normalisation, mode-09 derivation, missing-field notes, mode-22
+bucketing, registry-enriched names, and the API endpoint (404,
+inline baseline, source-session resolution).
+
+**576 tests pass.**
+
 ## 0.6.9 — 2026-06-19
 
 **CVN capture path.** Cristopher's bench: scan tool reads VIN
