@@ -19,6 +19,91 @@ from .base import Adapter, AdapterError, AdapterStatus, ConnectionState
 log = logging.getLogger(__name__)
 
 
+def _extract_all_bitmap_candidates(resp) -> list[bytes]:
+    """
+    Collect every 4-byte supported-PID bitmap candidate from a raw
+    python-obd response. Multiple candidates arise when more than one
+    ECU answers Mode 01 PID 0x00 — most commonly the engine and
+    transmission both responding under CAN. To avoid dropping PIDs
+    that only one ECU supports, the caller ORs all candidates
+    together.
+
+    Handles response shapes python-obd has produced across versions:
+      - `resp.value` is bytes / bytearray (some noop-decoder builds)
+      - `resp.value` is a list of `Message` objects with `.data`
+      - `resp.value` is a list of strings (older python-obd in
+        debug-passthrough mode)
+      - `resp.messages` is the same list as value, populated even
+        when the decoder returned None
+      - Echo prefix (0x41 + PID byte) may or may not be stripped
+
+    Returns the candidates verbatim — caller decides how to combine.
+    """
+    candidates: list[bytes] = []
+
+    def _consume(item) -> None:
+        if isinstance(item, (bytes, bytearray)):
+            candidates.append(bytes(item))
+            return
+        # python-obd Message objects expose `.data` (bytes), but some
+        # debug builds expose `.raw()` returning a hex string.
+        data = getattr(item, "data", None)
+        if isinstance(data, (bytes, bytearray)):
+            candidates.append(bytes(data))
+            return
+        if hasattr(item, "raw"):
+            try:
+                raw_str = item.raw() if callable(item.raw) else item.raw
+            except Exception:
+                raw_str = None
+            if isinstance(raw_str, str):
+                hexed = "".join(raw_str.split())
+                try:
+                    candidates.append(bytes.fromhex(hexed))
+                except ValueError:
+                    pass
+            return
+        if isinstance(item, str):
+            hexed = "".join(item.split())
+            try:
+                candidates.append(bytes.fromhex(hexed))
+            except ValueError:
+                pass
+
+    val = getattr(resp, "value", None)
+    if isinstance(val, list):
+        for m in val:
+            _consume(m)
+    else:
+        _consume(val)
+    for msg in getattr(resp, "messages", []) or []:
+        _consume(msg)
+
+    cleaned: list[bytes] = []
+    for raw in candidates:
+        if len(raw) >= 6 and raw[0] == 0x41:
+            cleaned.append(raw[2:6])
+        elif len(raw) >= 4:
+            cleaned.append(raw[:4])
+    return cleaned
+
+
+def _extract_bitmap_bytes(resp) -> bytes:
+    """
+    Back-compat single-bitmap accessor. ORs all candidates so a
+    multi-ECU response doesn't lose PIDs that only one ECU supports.
+    Returns empty bytes if no candidates were found.
+    """
+    candidates = _extract_all_bitmap_candidates(resp)
+    if not candidates:
+        return b""
+    merged = bytearray(4)
+    for raw in candidates:
+        for i in range(4):
+            merged[i] |= raw[i]
+    return bytes(merged)
+
+
 def _decode_string_response(value) -> str:
     """Decode a python-obd response value to a clean ASCII string.
 
@@ -242,6 +327,27 @@ class Elm327Adapter(Adapter):
         return self._conn
 
     def supported_pids(self) -> set[str]:
+        """
+        Enumerate the mode-01 PIDs the connected vehicle supports.
+
+        v0.6.12: prefer the raw bitmap probe (queries Mode 01 PID 0x00 /
+        0x20 / 0x40 / 0x60 / 0x80 / 0xA0 / 0xC0 and parses the response
+        bytes directly). This bypasses python-obd's command-table
+        filter, which only includes commands python-obd has decoders
+        for — so on a Mazda3 reporting 44 supported PIDs, the raw
+        probe returns all 44 even when python-obd recognises only 25
+        of them.
+
+        Falls back to python-obd's `supported_commands` set if the raw
+        probe returns nothing (e.g. older python-obd that doesn't
+        accept synthesised OBDCommands, or adapter rejected the
+        force=True query). Either path runs while connected; nothing
+        about the wire protocol changes.
+        """
+        raw = self._raw_supported_pids()
+        if raw:
+            return raw
+        log.debug("raw bitmap probe returned empty; falling back to python-obd supported_commands")
         c = self._ensure()
         out: set[str] = set()
         for cmd in c.supported_commands:
@@ -249,6 +355,90 @@ class Elm327Adapter(Adapter):
             pid = getattr(cmd, "pid", None)
             if mode is not None and pid is not None:
                 out.add(f"{int(mode):02X}{int(pid):02X}")
+        return out
+
+    def _raw_supported_pids(self) -> set[str]:
+        """
+        Query the mode-01 supported-PID bitmaps directly. Returns the
+        full PID set the ECU reports — independent of python-obd's
+        decoder coverage.
+
+        Per SAE J1979: each bitmap response is 4 bytes (32 bits). Bit
+        `7 - n` of byte `i` (MSB first) indicates whether PID
+        `group_base + i*8 + n + 1` is supported. The high bit of the
+        last bitmap byte indicates whether the next group should be
+        queried. We probe all seven canonical groups but stop early
+        when a group's continuation bit is clear.
+        """
+        if not _HAS_OBD:
+            return set()
+        try:
+            c = self._ensure()
+        except AdapterError:
+            return set()
+        try:
+            from obd import OBDCommand, ECU
+            from obd.decoders import noop
+        except Exception as exc:  # pragma: no cover - lib import failure
+            log.debug("raw bitmap probe: cannot import OBDCommand/noop: %s", exc)
+            return set()
+
+        out: set[str] = set()
+        groups_with_data: list[int] = []
+        for group_pid in (0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0, 0xE0):
+            try:
+                cmd = OBDCommand(
+                    f"raw_supported_{group_pid:02X}",
+                    f"raw supported-PID bitmap ({group_pid:02X})",
+                    f"01{group_pid:02X}".encode("ascii"),
+                    4,
+                    noop,
+                    ECU.ENGINE,
+                )
+                resp = c.query(cmd, force=True)
+            except Exception as exc:
+                log.debug("raw bitmap probe %02X failed: %s", group_pid, exc)
+                continue
+            if resp is None or resp.is_null():
+                log.debug("raw bitmap probe %02X: null response", group_pid)
+                continue
+            data = _extract_bitmap_bytes(resp)
+            if not data:
+                log.debug("raw bitmap probe %02X: no usable bitmap bytes in response", group_pid)
+                continue
+            groups_with_data.append(group_pid)
+            log.debug(
+                "raw bitmap probe %02X: %s",
+                group_pid, " ".join(f"{b:02X}" for b in data),
+            )
+            for byte_idx, byte_val in enumerate(data[:4]):
+                for bit in range(8):
+                    if byte_val & (1 << (7 - bit)):
+                        pid_num = group_pid + (byte_idx * 8) + bit + 1
+                        # PID 0x20, 0x40 etc are the continuation
+                        # bitmap PIDs themselves — bit set means
+                        # "next bitmap is available", not "PID 0x20 is
+                        # a normal data PID". Skip those.
+                        if pid_num in (0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0, 0xE0):
+                            continue
+                        out.add(f"01{pid_num:02X}")
+            # Continuation bit is the LSB of the 4th byte. If clear,
+            # higher groups are not supported and we can short-circuit.
+            if len(data) >= 4 and not (data[3] & 0x01):
+                break
+
+        # Soft sanity check: if a real connection responded to at least
+        # one group but the resulting set is implausibly small (1–2
+        # PIDs total), warn so a diagnostics review notices. Mode 01
+        # PID 0x01 (monitor status) is always supported by any OBD-II
+        # vehicle, so a count below 3 means the bitmap parse is wrong
+        # or the connection is degenerate.
+        if groups_with_data and 0 < len(out) < 3:
+            log.warning(
+                "raw bitmap probe: implausibly low PID count (%d) from %d "
+                "responding group(s) — bitmap parse may be malformed",
+                len(out), len(groups_with_data),
+            )
         return out
 
     def read_pid(self, pid: str) -> LiveSample | None:

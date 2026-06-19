@@ -1,5 +1,78 @@
 # Changelog
 
+## 0.6.12 — 2026-06-19
+
+**Raw supported-PID bitmap probe.** v0.6.11's diagnostics will
+show whether the 44→10 gap is at discovery time or at read time.
+This release pre-emptively fixes the discovery side: a Mazda3
+reporting 44 PIDs on the bitmap will discover 44, regardless of
+how many of them python-obd has decoders for.
+
+### Why the gap exists
+
+`Elm327Adapter.supported_pids()` previously enumerated
+`pyobd.supported_commands`, which only contains commands python-obd
+has registered decoders for. If the car claims 44 supported PIDs
+but python-obd recognises only 25, the adapter reports 25 — and
+the capture loop never reads the other 19. The simulator then
+advertises only what landed in `live_data.jsonl`.
+
+### Fix
+
+New `Elm327Adapter._raw_supported_pids()`: synthesises an
+`OBDCommand` for each canonical bitmap group (Mode 01 PID 0x00,
+0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0, 0xE0), queries with
+`force=True` so python-obd doesn't gate on `supported_commands`,
+and parses the 4-byte response bitmap directly. Returns the union.
+
+`supported_pids()` prefers the raw probe and only falls back to
+`pyobd.supported_commands` if the probe came back empty (e.g.
+older python-obd that doesn't accept synthesised commands).
+
+### Defensive measures added during the audit
+
+The probe response-shape varies across python-obd versions,
+adapters, and protocols. To cover every observed case:
+
+1. **Multi-ECU response OR'ing.** On CAN, both engine ($7E8) and
+   trans ($7E9) may answer Mode 01 PID 0x00. Old code took the
+   first message's bitmap and silently dropped PIDs that only one
+   ECU supported. `_extract_bitmap_bytes` now ORs all candidates
+   so the union is preserved.
+2. **Response shape variants.** `_extract_all_bitmap_candidates`
+   handles four shapes: `resp.value` as bytes, as a list of
+   `Message` objects with `.data`, as a list with `.raw()`
+   returning a hex string, and as a list of bare strings. Also
+   handles the echo-prefix variant (`41 00 BE 1F A8 13` vs
+   `BE 1F A8 13`).
+3. **Continuation-marker filtering.** PIDs 0x20 / 0x40 / 0x60 /
+   0x80 / 0xA0 / 0xC0 / 0xE0 themselves are bitmap continuation
+   markers, not data PIDs. They're filtered from the returned set.
+4. **Implausibly-low warning.** If at least one bitmap group
+   responded but the resulting PID set has fewer than 3 entries,
+   a WARNING log fires — the bitmap parse is almost certainly
+   wrong because Mode 01 PID 0x01 is universally supported.
+5. **Per-group DEBUG logging** of the raw 4 bytes for forensic
+   review when a real-bench probe still under-discovers.
+6. **Group 0xE0 included** for completeness — covers PIDs
+   0xE1–0x100.
+7. **Disconnected adapter / missing python-obd / null response /
+   query exception** all return empty cleanly instead of raising.
+
+### Tests
+
+`tests/test_raw_bitmap_probe_v0612.py` — 22 tests covering byte
+extraction across all four response shapes, echo-prefix stripping,
+multi-ECU OR'ing, hex-string `.raw()` and string-attr `.raw`
+variants, unparseable hex graceful skip, bitmap decoding,
+continuation-bit early-stop, continuation-bit advance, disconnected
+adapter, missing python-obd, query exceptions, null response,
+prefer-raw-over-fallback, fall-back-when-empty, multi-ECU
+integration, low-count WARNING, no-warning on plausible count, and
+group 0xE0 coverage.
+
+**606 tests pass.**
+
 ## 0.6.11 — 2026-06-19
 
 **Capture-side PID diagnostics.** v0.6.10 confirmed via coverage
