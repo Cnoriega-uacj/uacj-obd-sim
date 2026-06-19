@@ -187,3 +187,106 @@ def test_scenario_to_state_propagates_encoded_monitor_bytes() -> None:
     assert state.monitor_b == 0x01     # MIS supported, complete
     assert state.monitor_c == 0x01     # CAT supported
     assert state.monitor_d == 0x01     # CAT not complete
+
+
+# ---------------------------------------------------------------------------
+# v0.6.13/v0.6.14 — raw passthrough end-to-end through CAN runtime
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_answers_raw_passthrough_pid_via_can() -> None:
+    """A scenario carrying a raw-bytes PID should produce the correct
+    Mode 01 response over CAN — verifies the whole stack
+    (scenario_to_state → ScenarioState.live → ECU._mode01 →
+    encode_pid raw branch → ISO-TP single frame)."""
+    payload = {
+        "vehicle": {"vin": "1HGCM82633A123456"},
+        "live_baseline": {"01AB": "raw:CAFE"},
+    }
+    state = scenario_to_state(payload)
+    assert state.live["01AB"] == "raw:CAFE"
+
+    ecu = EcuEmulator(state)
+    rt = CanRuntime(ecu, _NullBus())
+    framer = IsoTpFramer()
+    req = CanFrame(0x7DF, framer.encode(bytes([0x01, 0xAB]))[0].data)
+    out = rt.handle_request_frame(req)
+    assert len(out) == 1
+    decoder = IsoTpFramer()
+    response = decoder.decode(out[0])
+    # Mode 01 response: 0x41 + PID + raw bytes
+    assert response == bytes([0x41, 0xAB, 0xCA, 0xFE])
+
+
+def test_runtime_raw_pid_advertised_in_bitmap() -> None:
+    """Mode 01 PID 0xA0 group bitmap must include PID 0xAB when the
+    scenario has a raw value for it — otherwise the scan tool won't
+    even request it."""
+    payload = {
+        "vehicle": {"vin": "1HGCM82633A123456"},
+        "live_baseline": {"010C": 800, "01AB": "raw:CAFE"},
+    }
+    state = scenario_to_state(payload)
+    ecu = EcuEmulator(state)
+    rt = CanRuntime(ecu, _NullBus())
+    framer = IsoTpFramer()
+    # Request mode 01 PID 0xA0 (which covers PIDs 0xA1..0xC0)
+    req = CanFrame(0x7DF, framer.encode(bytes([0x01, 0xA0]))[0].data)
+    out = rt.handle_request_frame(req)
+    decoder = IsoTpFramer()
+    response = decoder.decode(out[0])
+    # 0x41 0xA0 + 4 bitmap bytes
+    assert response[:2] == bytes([0x41, 0xA0])
+    bitmap = response[2:6]
+    # PID 0xAB is at position (0xAB - 0xA1) = 10 in this group.
+    # Byte 1, bit 7 - (10 % 8) = bit 5.
+    assert (bitmap[1] & (1 << 5)) != 0
+
+
+def test_runtime_invalid_raw_marker_nrcs() -> None:
+    """An invalid raw marker should NRC (not crash, not return garbage)
+    because is_answerable returned False, so the bitmap won't claim
+    support — but if a tool still asks, encode_pid returns None and
+    _mode01 produces NRC 0x31."""
+    payload = {
+        "vehicle": {"vin": "1HGCM82633A123456"},
+        "live_baseline": {"01AB": "raw:not_hex"},
+    }
+    state = scenario_to_state(payload)
+    ecu = EcuEmulator(state)
+    rt = CanRuntime(ecu, _NullBus())
+    framer = IsoTpFramer()
+    req = CanFrame(0x7DF, framer.encode(bytes([0x01, 0xAB]))[0].data)
+    out = rt.handle_request_frame(req)
+    decoder = IsoTpFramer()
+    response = decoder.decode(out[0])
+    # NRC layout: 0x7F + service + reason
+    assert response[0] == 0x7F
+    assert response[1] == 0x01
+
+
+def test_runtime_long_raw_payload_uses_multi_frame() -> None:
+    """A raw response longer than 7 bytes (the ISO-TP single-frame
+    limit minus mode+pid bytes) needs FF + CFs. Verifies the
+    multi-frame path works for arbitrary captured-bytes PIDs."""
+    # Build a 16-byte raw payload — too long for a single CAN frame
+    raw_hex = "".join(f"{i:02X}" for i in range(16))
+    payload = {
+        "vehicle": {"vin": "1HGCM82633A123456"},
+        "live_baseline": {"01AB": f"raw:{raw_hex}"},
+    }
+    state = scenario_to_state(payload)
+    ecu = EcuEmulator(state)
+    rt = CanRuntime(ecu, _NullBus())
+    framer = IsoTpFramer()
+    req = CanFrame(0x7DF, framer.encode(bytes([0x01, 0xAB]))[0].data)
+    out = rt.handle_request_frame(req)
+    # Response total: 0x41 + 0xAB + 16 bytes = 18 bytes → needs FF + CFs
+    assert len(out) >= 2
+    decoder = IsoTpFramer()
+    assembled = None
+    for frame in out:
+        assembled = decoder.decode(frame)
+    assert assembled is not None
+    assert assembled[:2] == bytes([0x41, 0xAB])
+    assert assembled[2:] == bytes(range(16))

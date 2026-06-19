@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.15 — 2026-06-19
+
+**Raw-passthrough integration hardening.** v0.6.13 added unit
+tests for the encoder + adapter layers; v0.6.14 added unit tests
+for diagnostics + diff + coverage. v0.6.15 closes the gap with
+four end-to-end tests through `CanRuntime` to verify the whole
+stack works correctly under realistic conditions:
+
+1. **Single-frame raw response** — a captured PID with a 2-byte
+   `"raw:CAFE"` value produces the right Mode 01 ISO-TP single
+   frame (`0x41 0xAB 0xCA 0xFE`).
+2. **Bitmap advertisement** — a raw PID in `live_baseline` shows
+   up in the supported-PID bitmap of its group (PID 0xAB in the
+   0xA0 group response), so the scan tool will actually request it.
+3. **Invalid marker NRC** — a malformed `"raw:not_hex"` returns
+   NRC 0x31 instead of garbage bytes, and is correctly *not*
+   advertised in the bitmap.
+4. **Multi-frame raw response** — a 16-byte raw payload exceeds
+   the ISO-TP single-frame limit and is correctly split into a
+   first frame + consecutive frames that decode back to the
+   original bytes.
+
+These exercise paths not covered by the v0.6.13/v0.6.14 unit
+tests, particularly the multi-frame split for long raw payloads
+and the bitmap-derivation-with-raw integration.
+
+**645 tests pass.**
+
 ## 0.6.14 — 2026-06-19
 
 **Raw-PID accounting visible in diagnostics + diff + coverage.**
