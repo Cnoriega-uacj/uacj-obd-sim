@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.4.13 — 2026-06-18
+
+Eliminates the **Pattern E** root cause discovered while shipping
+v0.4.12: static "supported-PIDs" bitmaps drifting away from the
+dispatcher's actual implementation. Also closes a Mode 09 spec gap
+that v0.4.12 missed.
+
+### Pattern E root-cause fix
+
+Mode 09 PID 0x00 (supported-PIDs bitmap) was a hand-coded constant.
+Every time a new Mode 09 PID was added, the constant had to be
+updated by hand or it would drift out of sync. v0.4.12 found the
+drift the hard way — the bitmap was advertising 0x06 (CVN, which we
+hadn't implemented yet) and NOT advertising 0x0A (ECU name, which
+we did implement). Strict scan tools that only query advertised
+PIDs would never read ECU name on the simulator.
+
+Fix: a new constant `_MODE09_IMPLEMENTED_PIDS` is the single source
+of truth, and `_mode09_supported_bitmap()` derives the response
+bytes from it dynamically. Adding a Mode 09 PID now requires
+updating ONE place (the set), and the bitmap follows automatically.
+
+### Mode 09 spec gap closed
+
+python-obd's command table lists Mode 09 PIDs 0x01, 0x03, 0x05 —
+the "message count" pre-queries strict scan tools issue before
+reading VIN / Calibration ID / CVN. These tell the tool how many
+data items to expect. v0.4.12 left them as NRC, which on a strict
+tool could short-circuit the actual data read.
+
+v0.4.13 adds them all (always answering count=1, since we emulate a
+single ECU). After this release, every Mode 09 PID python-obd knows
+about plus PID 0x0A (ECU name, non-standard but common) is
+implemented and advertised.
+
+### Test layer that prevents drift recurring (`test_spec_symmetry.py`)
+
+The fix above closes today's drift, but a future contributor could
+re-introduce the same Pattern E bug by adding a dispatcher branch
+without updating the set, or vice versa. Three new symmetry tests
+make that impossible to ship silently:
+
+1. `test_mode09_bitmap_advertises_exactly_what_is_implemented` —
+   decodes the bitmap and asserts it matches the implemented set.
+2. `test_mode09_every_advertised_pid_returns_positive_response` —
+   probes every advertised PID; any that returns NRC is a drift.
+3. `test_mode09_every_implemented_pid_is_in_advertised_set` —
+   probes every PID in the bitmap range; any positive response not
+   in the implemented set is also a drift.
+
+Plus:
+4. `test_mode09_advertised_pid_set_matches_real_scan_tools` — locks
+   in v0.4.12's empirical truth (Innova 5210 queries PIDs 0x02,
+   0x04, 0x06, 0x0A).
+5. `test_mode09_message_count_pids_return_one` — locks in the
+   new 0x01/0x03/0x05 responses.
+
+Total tests: 209 → 214 (+5 symmetry).
+
+### What this means for Pattern D recurrence
+
+The earlier audits (v0.4.11) and individual patches (v0.4.2, v0.4.3,
+v0.4.5, v0.4.11, v0.4.12) all addressed **Pattern D: SAE J1979
+implementation incomplete** by finding individual missing Mode/PID
+combinations and adding them. They patched instances. None
+eliminated the root cause.
+
+v0.4.13 takes a different approach for Mode 09: the symmetry test
+turns "spec completeness" into a property the codebase ENFORCES
+rather than something contributors have to remember. It does not
+backfill missing Modes (Mode 06's 88 PIDs, Mode 02's freeze-frame
+variants, Mode 22's manufacturer PIDs are still partial), but it
+establishes the pattern for closing those gaps in v0.5.0 — add the
+same symmetry test per mode, derive bitmaps dynamically, declare an
+implemented set as the source of truth.
+
 ## 0.4.12 — 2026-06-18
 
 Adds Mode 09 PID 0x06 (CVN — Calibration Verification Number)

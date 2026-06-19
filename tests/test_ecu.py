@@ -163,17 +163,16 @@ def test_mode04_clears_stored_and_pending_only() -> None:
     assert state.freeze_dtc is None  # we wipe freeze on clear; clarified in code
 
 
-def test_mode09_pid00_advertises_pids_2_4_6_and_0a() -> None:
-    """v0.4.12: the supported-PIDs bitmap must include every PID the
-    dispatcher actually answers. Previously bitmap was 0x54 0x00 0x00 0x00
-    (PIDs 2, 4, 6) but the dispatcher also answered 0x0A (ECU name).
-    Scan tools that strictly honour the bitmap never queried 0x0A.
-    Now byte B = 0x40 advertises PID 0x0A as well."""
+def test_mode09_pid00_advertises_all_implemented_pids() -> None:
+    """v0.4.13: bitmap is now derived from `_MODE09_IMPLEMENTED_PIDS`
+    so it can never silently drift from what the dispatcher answers.
+    Implemented PIDs after v0.4.13: 0x01, 0x02, 0x03, 0x04, 0x05,
+    0x06, 0x0A. Byte A bits 7,6,5,4,3,2 set = 0xFC; byte B bit 6 = 0x40."""
     ecu = _ecu()
     resp = ecu.handle(bytes([0x09, 0x00]))
     assert resp[:2] == bytes([0x49, 0x00])
-    assert resp[2] == 0x54  # PIDs 2, 4, 6 in byte A
-    assert resp[3] == 0x40  # PID 0x0A in byte B
+    assert resp[2] == 0xFC, f"byte A = 0x{resp[2]:02X}, expected 0xFC"
+    assert resp[3] == 0x40
     assert resp[4] == 0x00
     assert resp[5] == 0x00
 

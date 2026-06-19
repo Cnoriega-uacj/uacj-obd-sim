@@ -202,6 +202,41 @@ def _clean_ascii_field(value) -> str:
     return text.strip()
 
 
+# v0.4.13: single source of truth for "what Mode 09 PIDs the dispatcher
+# implements." The supported-PIDs bitmap (PID 0x00) is derived from
+# this set so it can never drift out of sync.
+_MODE09_IMPLEMENTED_PIDS: frozenset[int] = frozenset({
+    0x01,  # VIN message count
+    0x02,  # VIN
+    0x03,  # Cal ID message count
+    0x04,  # Cal ID
+    0x05,  # CVN message count
+    0x06,  # CVN
+    0x0A,  # ECU name
+})
+
+
+def _mode09_supported_bitmap() -> bytes:
+    """Return 4-byte bitmap advertising which Mode 09 PIDs we answer.
+
+    Per SAE J1979 the bitmap covers PIDs 0x01-0x20. Bit 7 of byte A is
+    PID 1; bit 0 of byte A is PID 8; bit 7 of byte B is PID 9; bit 0 of
+    byte B is PID 16; etc. We never advertise PID 0x00 itself (the
+    bitmap is implicitly always supported).
+    """
+    bitmap = 0
+    for pid in _MODE09_IMPLEMENTED_PIDS:
+        if 1 <= pid <= 0x20:
+            bit = 32 - pid  # PID 1 → bit 31; PID 0x20 → bit 0
+            bitmap |= 1 << bit
+    return bytes([
+        (bitmap >> 24) & 0xFF,
+        (bitmap >> 16) & 0xFF,
+        (bitmap >> 8) & 0xFF,
+        bitmap & 0xFF,
+    ])
+
+
 def _parse_cvn(value) -> bytes | None:
     """
     Parse a Calibration Verification Number into the 4 raw bytes the
@@ -476,17 +511,23 @@ class EcuEmulator:
         if not args:
             return _negative(0x09, NRC_REQUEST_OUT_OF_RANGE)
         pid = args[0]
-        # PID 0x00: supported PIDs bitmap.
-        # Bit 7 of byte A = PID 1; bit 0 of byte A = PID 8; etc.
-        # Currently advertised: 0x02 (VIN), 0x04 (Cal ID), 0x06 (CVN), 0x0A (ECU name).
-        #   byte A = bits 6,4,2 set = 0x54  → PIDs 2, 4, 6
-        #   byte B = bit 6 set     = 0x40  → PID 10 (0x0A)
-        # v0.4.12: byte B now correctly advertises PID 0x0A. Previously
-        # the dispatcher answered PID 0x0A but did not list it in the
-        # supported bitmap — scan tools that strictly honour the bitmap
-        # would never even ask for the ECU name.
+        # v0.4.13: Mode 09 PID 0x00 (supported PIDs bitmap) is now derived
+        # dynamically from `_MODE09_IMPLEMENTED_PIDS` — the SAME source the
+        # dispatcher uses. This eliminates the Pattern E drift bug where
+        # the static bitmap could advertise PIDs the dispatcher did not
+        # implement (or vice versa). To add a new Mode 09 PID, just add
+        # its handler and put the PID in the implemented set — the
+        # bitmap updates itself and the symmetry test stays passing.
         if pid == 0x00:
-            return bytes([0x49, 0x00, 0x54, 0x40, 0x00, 0x00])
+            return bytes([0x49, 0x00]) + _mode09_supported_bitmap()
+        # PID 0x01: VIN message count (1 ECU = 1 VIN data item).
+        # PID 0x03: Calibration ID message count.
+        # PID 0x05: CVN message count.
+        # These are queried by strict scan tools BEFORE the actual data
+        # read. Per SAE J1979 the response is one byte = number of data
+        # messages. We always answer 1 because we emulate a single ECU.
+        if pid in (0x01, 0x03, 0x05):
+            return bytes([0x49, pid, 0x01])
         if pid == 0x02:
             vin = _clean_ascii_field(self.state.vin)
             if not vin:

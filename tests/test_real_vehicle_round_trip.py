@@ -294,9 +294,12 @@ def test_real_mazda3_vehicle_id_round_trip_with_cvn() -> None:
     name_resp = ecu.handle(bytes([0x09, 0x0A]))
     assert name_resp[3:].rstrip(b"\x00") == b"ECM"
 
-    # Supported PIDs bitmap (Mode 09 PID 00) must now advertise all four
+    # Supported PIDs bitmap (Mode 09 PID 00) must advertise every PID
+    # the dispatcher implements. v0.4.13 added 0x01/0x03/0x05 message-
+    # count PIDs alongside the existing 0x02/0x04/0x06/0x0A, so the
+    # bitmap is now 0xFC 0x40 0x00 0x00.
     bitmap_resp = ecu.handle(bytes([0x09, 0x00]))
-    assert bitmap_resp[2:6] == bytes([0x54, 0x40, 0x00, 0x00])
+    assert bitmap_resp[2:6] == bytes([0xFC, 0x40, 0x00, 0x00])
 
 
 def test_v0_4_11_encoder_coverage_meets_mazda3_subset() -> None:
