@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.6.9 — 2026-06-19
+
+**CVN capture path.** Cristopher's bench: scan tool reads VIN
+correctly, readiness page is fully green, but Mode 09 PID 04
+(Cal ID) and 06 (CVN) come back empty. Two root causes:
+
+1. `VehicleInfo` had no `cvn` field at all, so even a successful
+   python-obd `CVN` read would have nowhere to land.
+2. The Elm327Adapter only requested `VIN`, `CALIBRATION_ID`, and
+   `ECU_NAME` — never CVN.
+3. The scenario-create endpoint pulled `vin` from the DB row when a
+   source_session_id was given but ignored the on-disk
+   `metadata.json`, so even when the capture did record
+   calibration_id, that field never made it into the pushed
+   scenario.
+
+### Fix
+
+- `VehicleInfo` gains a `cvn: str | None` field. Round-trips
+  through JSON and through `scenario_to_state` into
+  `ScenarioState.cvn`. Default is None — unchanged for legacy
+  clients.
+- `Elm327Adapter.read_vehicle_info()` now also queries
+  `pyobd.commands.CVN`. python-obd's decoder returns the canonical
+  8-char hex form (e.g. `"CDA08E85"`) which the simulator's
+  `_parse_cvn` already accepts.
+- `MockAdapter.read_vehicle_info()` returns a stable test CVN
+  (`"CDA08E85"`) so end-to-end mock captures answer Mode 09 06
+  positively instead of NRC.
+- `POST /api/scenarios`, when given a `source_session_id`, now
+  reads `metadata.json` from the session folder and populates the
+  full `VehicleInfo` (vin, make, model, year, calibration_id, cvn,
+  ecu_name) rather than VIN-only. Falls back to VIN-only if the
+  metadata file is missing or unreadable — never 500s.
+
+### What Cristopher needs to do
+
+1. Update both laptop and Pi to v0.6.9.
+2. Re-capture the Mazda3 (his existing captures pre-date the
+   model change, so they don't have cvn in metadata.json).
+3. Re-create the scenario from that fresh capture.
+4. Re-push to the Pi.
+5. Mode 09 PID 04 should now show the Mazda calibration ID, and
+   PID 06 should show the CVN hash.
+
+### Tests
+
+`tests/test_cvn_capture_v069.py` — 12 tests covering the
+VehicleInfo field, JSON round-trip, MockAdapter coverage,
+`scenario_to_state` plumbing, ECU Mode 09 04/06 success and NRC
+paths, scenario-create reading metadata.json with both happy-path
+and missing-metadata fallback, and the /api/sim/load round-trip
+showing cal_id appears in the Pi's /api/sim/state.
+
+**563 tests pass.**
+
 ## 0.6.8 — 2026-06-19
 
 **Pi state visibility on the dashboard.** v0.6.6 added a

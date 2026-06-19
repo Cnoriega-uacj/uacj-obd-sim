@@ -140,6 +140,7 @@ class MockAdapter(Adapter):
             model=self._model,
             year=self._year,
             calibration_id="HND-CIV-2015-A1",
+            cvn="CDA08E85",
             ecu_name="ECM",
         )
 

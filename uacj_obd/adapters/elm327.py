@@ -307,6 +307,7 @@ class Elm327Adapter(Adapter):
         for attr_name, cmd_name in (
             ("vin", "VIN"),
             ("calibration_id", "CALIBRATION_ID"),
+            ("cvn", "CVN"),
             ("ecu_name", "ECU_NAME"),
         ):
             cmd = getattr(pyobd.commands, cmd_name, None)

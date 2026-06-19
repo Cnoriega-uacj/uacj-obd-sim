@@ -53,6 +53,7 @@ class VehicleInfo(BaseModel):
     model: str | None = None
     year: int | None = None
     calibration_id: str | None = None
+    cvn: str | None = None
     ecu_name: str | None = None
 
 

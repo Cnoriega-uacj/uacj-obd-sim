@@ -416,7 +416,23 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         if not vehicle and req.source_session_id:
             row = db.get_session(req.source_session_id)
             if row and row.get("vin"):
-                vehicle = VehicleInfo(vin=row["vin"])
+                # v0.6.9: pull the full VehicleInfo (vin, make, model, year,
+                # calibration_id, cvn, ecu_name) from the on-disk
+                # metadata.json. The DB row only stores vin/make/model/year,
+                # so without this read, Mode 09 PID 04/06/0A end up NRC
+                # because state.calibration_id/cvn/ecu_name are None.
+                folder = row.get("folder")
+                if folder:
+                    meta_path = Path(folder) / "metadata.json"
+                    if meta_path.exists():
+                        try:
+                            meta_dict = json.loads(meta_path.read_text())
+                            v = meta_dict.get("vehicle") or {}
+                            vehicle = VehicleInfo(**v)
+                        except (OSError, json.JSONDecodeError, ValueError) as exc:
+                            log.warning("scenario create: bad metadata.json at %s: %s", meta_path, exc)
+                if not vehicle:
+                    vehicle = VehicleInfo(vin=row["vin"])
         scenario = Scenario(
             scenario_id=scenario_id,
             label=req.label,
