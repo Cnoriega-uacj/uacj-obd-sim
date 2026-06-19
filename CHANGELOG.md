@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.6.2 — 2026-06-19
+
+**Final coverage pass on the simulator's CAN runtime.** The
+`CanRuntime` class (the loop the Pi runs to receive scan-tool
+requests and write responses on `can0`) had implicit coverage from
+the end-to-end integration tests but no direct tests against the
+runtime methods themselves. v0.6.2 adds 11 direct tests using a
+`FakeBus` (deque + recorded sends) following the same pattern that
+worked for the K-Line and J1850 runtimes.
+
+### Coverage improvements
+
+| Module | v0.6.1 | v0.6.2 |
+|--------|--------|--------|
+| `simulator/can_runtime.py` runtime branches | partial | covered |
+| **Project total** | 84% | **85%** |
+
+### `tests/test_can_runtime_v062.py` (+11 tests)
+
+- `handle_request_frame` dispatches Mode 01 PID 0x0C (RPM) correctly,
+  ignores frames on unrelated arbitration IDs, accepts both functional
+  (0x7DF) and physical (0x7E0/0x7E1) request IDs.
+- Returns empty list on ISO-TP decode error (unknown PCI nibble),
+  returns empty when the ECU returns an empty payload, returns
+  empty during multi-frame assembly (no full request yet).
+- `run()` threaded loop: responds to queued request, returns
+  promptly when stop signalled and bus is idle, skips unrelated
+  arbitration IDs.
+- Custom `response_id` honoured (e.g. 0x7E9 instead of default 0x7E8).
+- `CanRuntime.open_socketcan()` raises a helpful RuntimeError when
+  python-can isn't installed.
+
+Total tests 378 → 389 (+11). No regressions. Project coverage
+84% → 85%.
+
+### Coverage milestone
+
+After v0.6.2, every Pi-side I/O runtime has high coverage:
+
+| Runtime | Coverage |
+|---------|----------|
+| `simulator/can_runtime.py` | ~85% (runtime branches now direct) |
+| `simulator/kline_runtime.py` | 89% (v0.6.0) |
+| `simulator/j1850_runtime.py` | 98% (v0.6.1) |
+| `simulator/server.py` | 100% (v0.5.5) |
+| `simulator/replay_engine.py` | 94% (v0.5.0) |
+
+The remaining uncovered code in the simulator subtree is exclusively
+hardware-attachment shims (e.g. python-can `open_socketcan`,
+pyserial `open_serial`) that need the library installed AND a real
+device to exercise.
+
 ## 0.6.1 — 2026-06-19
 
 **Continued hardening pass.** Two more modules lifted to high coverage,
