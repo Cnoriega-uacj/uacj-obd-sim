@@ -261,6 +261,74 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
                                  o.get("value"), o.get("unit")])
         return FileResponse(live, media_type="text/csv", filename=f"{session_id}.csv")
 
+    @app.delete("/api/sessions/{session_id}")
+    def delete_session(session_id: str) -> dict:
+        """
+        v0.6.7: remove a single session (DB row + on-disk folder).
+        Refuses to delete the currently-running capture so the instructor
+        can't accidentally kill an in-flight session from the UI.
+        """
+        cur = state.get("current")
+        running_id = getattr(getattr(cur, "meta", None), "session_id", None)
+        if running_id == session_id:
+            raise HTTPException(409, "cannot delete the running session")
+        row = db.get_session(session_id)
+        if not row:
+            raise HTTPException(404, "session not found")
+        folder = row.get("folder")
+        if folder:
+            folder_path = Path(folder)
+            if folder_path.exists():
+                shutil.rmtree(folder_path, ignore_errors=True)
+        db.delete_session(session_id)
+        return {"deleted": True, "session_id": session_id}
+
+    @app.post("/api/sessions/cleanup")
+    def cleanup_sessions(
+        mode: str = "empty",
+        max_age_days: int = 90,
+        keep_minimum: int = 10,
+    ) -> dict:
+        """
+        v0.6.7: prune old or empty sessions. `mode` is one of:
+          - "empty"  → drop sessions with sample_count == 0
+          - "old"    → drop sessions older than `max_age_days`
+                       (always keep at least `keep_minimum` of the
+                       most-recent ones)
+          - "both"   → run "empty" then "old"
+        Returns a structured summary the dashboard can display.
+        """
+        from uacj_obd.retention import prune_empty, prune_old
+        if mode not in ("empty", "old", "both"):
+            raise HTTPException(400, "mode must be one of: empty, old, both")
+        cur = state.get("current")
+        if cur is not None:
+            raise HTTPException(409, "cannot cleanup while a session is running")
+        results: list[dict] = []
+        if mode in ("empty", "both"):
+            r = prune_empty(db)
+            results.append({
+                "policy": "empty",
+                "deleted_count": r.count,
+                "deleted_session_ids": r.deleted_session_ids,
+                "skipped_session_ids": r.skipped_session_ids,
+                "reason": r.reason,
+            })
+        if mode in ("old", "both"):
+            try:
+                r = prune_old(db, max_age_days=max_age_days, keep_minimum=keep_minimum)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from None
+            results.append({
+                "policy": "old",
+                "deleted_count": r.count,
+                "deleted_session_ids": r.deleted_session_ids,
+                "skipped_session_ids": r.skipped_session_ids,
+                "reason": r.reason,
+            })
+        total = sum(r["deleted_count"] for r in results)
+        return {"total_deleted": total, "results": results}
+
     # --- vehicles -----------------------------------------------------
 
     @app.get("/api/vehicles")

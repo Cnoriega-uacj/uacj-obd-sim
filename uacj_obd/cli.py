@@ -156,7 +156,11 @@ def simulator(channel: str, kline_port: str, kline_baud: int,
             runtimes.append(kl_rt)
             console.print(f"[green]✓[/] K-Line responder on {kline_port} @ {kline_baud}")
 
-    app = make_simulator_server(ecu)
+    app = make_simulator_server(ecu, auto_restore=True)
+    if ecu.state.vin:
+        console.print(
+            f"[green]✓[/] restored last scenario (VIN={ecu.state.vin})"
+        )
     console.print(f"[green]✓[/] simulator HTTP listening on {http_host}:{http_port}")
     try:
         uvicorn.run(app, host=http_host, port=http_port, log_level="info")

@@ -122,6 +122,16 @@ class Database:
                 rows = c.execute("SELECT * FROM sessions ORDER BY started_at DESC")
             return [dict(r) for r in rows]
 
+    def delete_session(self, session_id: str) -> bool:
+        """
+        v0.6.7: remove a session row by id. Returns True if a row was
+        actually deleted, False if no such session existed. The folder
+        on disk is the caller's responsibility (see SessionStore).
+        """
+        with self._conn() as c:
+            cur = c.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
+            return cur.rowcount > 0
+
     # --- scenarios -----------------------------------------------------
 
     def upsert_scenario(self, scenario_id: str, label: str,

@@ -6,26 +6,90 @@ the live ECU emulator state.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 
 from .ecu import EcuEmulator
 from .can_runtime import scenario_to_state
 from .replay_engine import ReplayEngine
+from .scenario_persistence import (
+    DEFAULT_PERSISTENCE_PATH,
+    clear_last_scenario,
+    load_last_scenario,
+    persistence_status,
+    save_last_scenario,
+)
 from .. import __version__ as PKG_VERSION
 
 log = logging.getLogger(__name__)
 
 
-def make_simulator_server(ecu: EcuEmulator) -> FastAPI:
+def _apply_scenario(
+    payload: dict,
+    ecu: EcuEmulator,
+    replay: dict[str, ReplayEngine | None],
+) -> tuple[int, str | None]:
+    """
+    Shared scenario-load logic used by both the `/api/sim/load` HTTP
+    handler and the boot-time auto-restore. Returns
+    `(samples_loaded, vin)`. Raises on malformed payloads.
+    """
+    new_state = scenario_to_state(payload)
+    old_engine = replay["engine"]
+    if old_engine is not None:
+        old_engine.stop()
+        replay["engine"] = None
+    ecu.load(new_state)
+    timeline = list(new_state.live_timeseries)
+    if timeline:
+        engine = ReplayEngine(
+            state=new_state,
+            samples=timeline,
+            loop=new_state.live_timeseries_loop,
+        )
+        engine.start()
+        replay["engine"] = engine
+    return len(timeline), new_state.vin
+
+
+def make_simulator_server(
+    ecu: EcuEmulator,
+    persistence_path: Path | str | None = DEFAULT_PERSISTENCE_PATH,
+    auto_restore: bool = False,
+) -> FastAPI:
+    """
+    Build the Pi-side FastAPI app.
+
+    `persistence_path` controls where the last-loaded scenario payload
+    is mirrored to disk. Pass `None` to disable persistence entirely
+    (useful in tests so the dev machine's home dir stays clean).
+
+    `auto_restore`, when True, looks for a persisted scenario on disk
+    and re-applies it (including the replay engine) before the server
+    starts handling requests. Used by the `uacj-obd simulator` CLI on
+    boot so a Pi reboot mid-class is invisible to students.
+    """
     app = FastAPI(
         title="UACJ Simulator Board",
         version="0.1.0",
         description="Pi-side scenario receiver for the UACJ OBD-II simulator.",
     )
 
-    # v0.5.0: one replay engine at a time, swapped on scenario load.
     replay: dict[str, ReplayEngine | None] = {"engine": None}
+    persist_path: Path | None = Path(persistence_path) if persistence_path is not None else None
+
+    if auto_restore and persist_path is not None:
+        restored = load_last_scenario(persist_path)
+        if restored is not None:
+            try:
+                samples, vin = _apply_scenario(restored, ecu, replay)
+                log.info(
+                    "auto-restore: scenario re-applied VIN=%s replay=%d samples",
+                    vin, samples,
+                )
+            except Exception as exc:
+                log.warning("auto-restore failed: %s", exc)
 
     @app.get("/api/sim/health")
     def health() -> dict:
@@ -68,37 +132,23 @@ def make_simulator_server(ecu: EcuEmulator) -> FastAPI:
         and atomically swap the ECU state. If the payload includes a
         `live_timeseries` field, a `ReplayEngine` is started that mutates
         `state.live` according to the captured cadence.
+
+        v0.6.7: the payload is mirrored to disk so a Pi reboot mid-class
+        does not lose the loaded scenario.
         """
-        new_state = scenario_to_state(payload)
-        # Stop the previous engine before swapping state — otherwise its
-        # writes race with the new scenario's static `live_overrides`.
-        old_engine = replay["engine"]
-        if old_engine is not None:
-            old_engine.stop()
-            replay["engine"] = None
-        ecu.load(new_state)
-        # Start a new engine if the scenario carried a timeline.
-        timeline = list(new_state.live_timeseries)
-        if timeline:
-            engine = ReplayEngine(
-                state=new_state,
-                samples=timeline,
-                loop=new_state.live_timeseries_loop,
-            )
-            engine.start()
-            replay["engine"] = engine
-            log.info(
-                "scenario loaded: VIN=%s DTCs=%d replay=%d samples (loop=%s)",
-                new_state.vin, len(new_state.dtcs_stored),
-                len(timeline), new_state.live_timeseries_loop,
-            )
-        else:
-            log.info("scenario loaded: VIN=%s DTCs=%d (static live data)",
-                     new_state.vin, len(new_state.dtcs_stored))
+        samples, vin = _apply_scenario(payload, ecu, replay)
+        log.info(
+            "scenario loaded: VIN=%s DTCs=%d replay=%d samples",
+            vin, len(ecu.state.dtcs_stored), samples,
+        )
+        persisted = False
+        if persist_path is not None:
+            persisted = save_last_scenario(payload, persist_path)
         return {
             "loaded": True,
-            "vin": new_state.vin,
-            "replay_samples": len(timeline),
+            "vin": vin,
+            "replay_samples": samples,
+            "persisted": persisted,
         }
 
     @app.post("/api/sim/clear")
@@ -121,5 +171,26 @@ def make_simulator_server(ecu: EcuEmulator) -> FastAPI:
     def recent_log(limit: int = 100) -> list[dict]:
         """Recent scan-tool requests this board has seen."""
         return ecu.recent_log(limit=limit)
+
+    @app.get("/api/sim/persistence")
+    def persistence_info() -> dict:
+        """
+        v0.6.7: report whether the Pi has a saved scenario on disk that
+        would be restored on next boot. The dashboard exposes this so
+        the instructor can verify before walking away from the bench.
+        """
+        if persist_path is None:
+            return {"enabled": False}
+        info = persistence_status(persist_path)
+        info["enabled"] = True
+        return info
+
+    @app.post("/api/sim/persistence/clear")
+    def persistence_clear() -> dict:
+        """Remove the saved scenario so the next reboot starts blank."""
+        if persist_path is None:
+            return {"enabled": False, "cleared": False}
+        ok = clear_last_scenario(persist_path)
+        return {"enabled": True, "cleared": ok}
 
     return app

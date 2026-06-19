@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.6.7 — 2026-06-19
+
+**Reboot-survival + storage hygiene.** Two more real-world
+operational failures handled, both pointed at by Cristopher's bench
+use.
+
+### Pi scenario persistence (survives reboots mid-class)
+
+Symptom: instructor pushes a scenario, students start scanning, the
+Pi power-blips or the watchdog fires, the scenario evaporates, the
+instructor has to push again — sometimes without realising students
+were scanning a blank ECU for several minutes.
+
+Fix: every `POST /api/sim/load` mirrors the payload atomically to
+`~/.uacj-sim-last-scenario.json` on the Pi (write to sibling
+tempfile, `fsync`, `os.replace` → safe against mid-write power
+loss). On simulator startup (`uacj-obd simulator`), the server
+re-applies the persisted scenario before accepting requests,
+including re-arming the live-data `ReplayEngine`. A corrupt
+persistence file gets quarantined (`<name>.corrupt`) rather than
+crashing startup.
+
+New endpoints on the Pi-side server:
+- `GET /api/sim/persistence` — reports whether a saved scenario
+  exists, its size/mtime, and the VIN it carries.
+- `POST /api/sim/persistence/clear` — wipes the saved scenario so
+  the next reboot starts blank.
+
+### Session retention (prevent SD-card / laptop-disk fill)
+
+Symptom: after a semester of captures, the dashboard list is
+unscannable and the disk creeps full. Empty captures (sample_count
+== 0 from a failed adapter open) clutter the list.
+
+Fix:
+- `DELETE /api/sessions/{session_id}` — remove a single session
+  (DB row + on-disk folder). 409 if it's the running capture, 404
+  if it doesn't exist.
+- `POST /api/sessions/cleanup?mode={empty,old,both}` — prune empty
+  captures, captures older than `max_age_days` (default 90, one
+  semester), or both. Always keeps the most-recent `keep_minimum`
+  (default 10) regardless of age — protects against end-of-semester
+  wipes that erase the entire history. 409 if a capture is running.
+
+### New modules
+
+- `uacj_obd/simulator/scenario_persistence.py` — atomic
+  save/load/clear + quarantine of corrupt files. Pure helpers, no
+  FastAPI dependency.
+- `uacj_obd/retention.py` — `prune_empty(db)` and `prune_old(db,
+  max_age_days, keep_minimum)` over a `Database`. Sort key treats
+  unparseable `started_at` values as oldest so legacy bad rows
+  don't accidentally protect themselves under the keep_minimum
+  floor.
+
+### Tests
+
+- `tests/test_scenario_persistence_v067.py` — 21 tests covering
+  save/load/clear, atomicity, corruption quarantine, simulator-server
+  integration (persist on /load, auto-restore on construction,
+  persistence endpoints, replay-engine re-arm).
+- `tests/test_retention_v067.py` — 23 tests covering prune_empty,
+  prune_old (with keep_minimum floor and unparseable-timestamp
+  handling), DELETE /sessions/{id} (404 / 409 / happy path), and
+  /sessions/cleanup (mode validation, 409-while-running).
+
+**545 tests pass.** Coverage 89% (`retention.py` 91%,
+`scenario_persistence.py` 76% — uncovered paths are all OSError
+defensive branches).
+
 ## 0.6.6 — 2026-06-19
 
 **Operational safeguards.** After v0.6.5 closed the static coverage
