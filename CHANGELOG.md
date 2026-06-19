@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.6.14 — 2026-06-19
+
+**Raw-PID accounting visible in diagnostics + diff + coverage.**
+v0.6.13 added raw passthrough; v0.6.14 makes its activity visible
+so Cristopher can verify "yes, 19 of the 44 PIDs landed via raw
+fallback" from the dashboard instead of having to grep
+`live_data.jsonl`.
+
+### Session diagnostics endpoint
+
+`GET /api/sessions/{id}/diagnostics` adds two new fields:
+- `captured_raw_count` — number of distinct PIDs whose captured
+  value at least once was a `"raw:HEX"` marker (the v0.6.13
+  fallback fired for them)
+- `captured_numeric_count` — `captured_unique_count -
+  captured_raw_count`
+- `captured_raw_pids` — sorted list for spot-checking
+
+The dashboard's session page renders this inline:
+`Capture landed: 44 unique PIDs (25 numeric · 19 raw passthrough)`
+
+### Coverage report
+
+`CoverageReport` adds `mode01_via_raw` and `mode01_via_formula`
+(derived). `PidEntry` gets `via_raw: bool`. The coverage endpoint
+exposes both; the scenario editor's "Preview coverage" button now
+says `Mode 01 PIDs: 47 captured, 47 answerable (28 formula + 19
+raw passthrough, 0 no encoder)` so the instructor can see the
+formula coverage and raw coverage independently.
+
+### Diff result
+
+`diff_sessions()` adds:
+- `raw_pids_a`, `raw_pids_b` — PIDs whose values are raw-only in
+  each session
+- `raw_pids_only_a`, `raw_pids_only_b` — symmetric difference
+  (raw in one but not the other)
+
+The per-PID numeric stats already filtered out raw values silently
+(only `isinstance(v, (int, float))` rows go through). Now the
+existence of raw PIDs is surfaced explicitly so a session pair
+comparison shows "Stats for 25 numeric PIDs + 19 raw PIDs not
+statistically compared" instead of pretending the raw PIDs aren't
+there.
+
+### Tests
+
+`tests/test_raw_accounting_v0614.py` — 10 tests covering
+diagnostics raw vs numeric breakdown (clean, mixed,
+PID-with-both-numeric-and-raw); coverage formula vs raw split
+(both, invalid raw marker → not answerable, PidEntry flag); diff
+raw_pids fields (present, absent, PID-with-both-not-in-raw-only).
+
+**641 tests pass.**
+
 ## 0.6.13 — 2026-06-19
 
 **Raw-bytes capture and replay.** v0.6.12 widens PID discovery to

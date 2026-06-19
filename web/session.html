@@ -127,7 +127,11 @@ async function loadDiagnostics(sid) {
     if (!el) return;
     let html = `<dt>Resolution source</dt><dd>${d.pid_resolution_source || "—"}</dd>`;
     html += `<dt>Adapter discovered</dt><dd>${d.discovered_count} PIDs</dd>`;
-    html += `<dt>Capture landed</dt><dd>${d.captured_unique_count} unique PIDs</dd>`;
+    html += `<dt>Capture landed</dt><dd>${d.captured_unique_count} unique PIDs`;
+    if (d.captured_raw_count > 0 || d.captured_numeric_count > 0) {
+      html += ` <span class="muted">(${d.captured_numeric_count} numeric · ${d.captured_raw_count} raw passthrough)</span>`;
+    }
+    html += `</dd>`;
     if (d.missing_after_capture.length) {
       html += `<dt>Missing after capture</dt><dd style="color:#a55">${d.missing_after_capture.length} PID(s): ${d.missing_after_capture.slice(0,20).join(", ")}${d.missing_after_capture.length > 20 ? "…" : ""}</dd>`;
     }

@@ -312,6 +312,7 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
         pid_resolution_source = meta.get("pid_resolution_source", "")
 
         captured: set[str] = set()
+        captured_raw: set[str] = set()
         live = folder / "live_data.jsonl"
         if live.exists():
             with live.open() as fh:
@@ -324,16 +325,29 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
                     except json.JSONDecodeError:
                         continue
                     pid = obj.get("pid")
-                    if isinstance(pid, str):
-                        captured.add(pid.upper())
+                    if not isinstance(pid, str):
+                        continue
+                    key = pid.upper()
+                    captured.add(key)
+                    # v0.6.14: a sample whose value is the raw marker
+                    # means v0.6.13's fallback fired for this PID —
+                    # python-obd couldn't decode it, so the adapter
+                    # stored the raw response bytes for pass-through.
+                    val = obj.get("value")
+                    if isinstance(val, str) and val.startswith("raw:"):
+                        captured_raw.add(key)
         captured_sorted = sorted(captured)
         discovered_set = set(discovered_pids)
         captured_only = sorted(captured - discovered_set)
         missing_after_capture = sorted(discovered_set - captured)
+        captured_numeric_count = len(captured) - len(captured_raw)
         return {
             "session_id": session_id,
             "pid_resolution_source": pid_resolution_source,
             "discovered_count": len(discovered_pids),
+            "captured_raw_count": len(captured_raw),
+            "captured_raw_pids": sorted(captured_raw),
+            "captured_numeric_count": captured_numeric_count,
             "discovered_pids": discovered_pids,
             "captured_unique_count": len(captured_sorted),
             "captured_pids": captured_sorted,
@@ -596,10 +610,13 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
             "mode01_total": report.mode01_total,
             "mode01_answerable": report.mode01_answerable,
             "mode01_unanswered": report.mode01_unanswered,
+            "mode01_via_formula": report.mode01_via_formula,
+            "mode01_via_raw": report.mode01_via_raw,
             "mode09_present": report.mode09_present,
             "mode22_total": report.mode22_total,
             "entries": [
-                {"key": e.key, "name": e.name, "unit": e.unit, "answerable": e.answerable}
+                {"key": e.key, "name": e.name, "unit": e.unit,
+                 "answerable": e.answerable, "via_raw": e.via_raw}
                 for e in report.entries
             ],
             "notes": report.notes,

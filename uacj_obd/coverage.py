@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .pids.registry import PidRegistry
-from .simulator.encoders import encodable_pids
+from .simulator.encoders import _try_raw_passthrough, encodable_pids
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,7 @@ class PidEntry:
     name: str
     unit: str
     answerable: bool
+    via_raw: bool = False  # v0.6.14: answerable via raw passthrough?
 
 
 @dataclass
@@ -38,6 +39,7 @@ class CoverageReport:
     total_pids: int = 0
     mode01_total: int = 0
     mode01_answerable: int = 0
+    mode01_via_raw: int = 0  # v0.6.14: of answerable, how many via raw passthrough
     mode09_present: list[str] = field(default_factory=list)
     mode22_total: int = 0
     entries: list[PidEntry] = field(default_factory=list)
@@ -46,6 +48,10 @@ class CoverageReport:
     @property
     def mode01_unanswered(self) -> int:
         return self.mode01_total - self.mode01_answerable
+
+    @property
+    def mode01_via_formula(self) -> int:
+        return self.mode01_answerable - self.mode01_via_raw
 
 
 _MODE09_VEHICLE_FIELDS: dict[int, str] = {
@@ -76,14 +82,26 @@ def compute_coverage(payload: dict, pid_reg: PidRegistry) -> CoverageReport:
     report.mode01_total = len(by_mode01)
     report.mode22_total = len(by_mode22)
 
+    baseline = (payload.get("live_baseline") or {})
+    overrides = (payload.get("live_overrides") or {})
+    merged_values: dict[str, object] = {}
+    for src in (baseline, overrides):
+        for k, v in src.items():
+            if isinstance(k, str):
+                merged_values[k.upper()] = v
     for key in by_mode01:
         defn = pid_reg.get(key)
         name = defn.name if defn else key
         unit = defn.unit if defn else ""
+        has_encoder = key in encodable
+        via_raw = _try_raw_passthrough(merged_values.get(key)) is not None
+        answerable = has_encoder or via_raw
         report.entries.append(PidEntry(
-            key=key, name=name, unit=unit, answerable=(key in encodable),
+            key=key, name=name, unit=unit,
+            answerable=answerable, via_raw=via_raw,
         ))
     report.mode01_answerable = sum(1 for e in report.entries if e.answerable)
+    report.mode01_via_raw = sum(1 for e in report.entries if e.via_raw)
 
     vehicle = payload.get("vehicle") or {}
     for pid_byte, attr in _MODE09_VEHICLE_FIELDS.items():

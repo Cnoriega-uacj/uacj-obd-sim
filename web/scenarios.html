@@ -343,7 +343,7 @@ $("coverage").onclick = async () => {
     const c = await api(`/api/scenarios/${active.scenario_id}/coverage`);
     const lines = [];
     lines.push(`Total PIDs: ${c.total_pids}`);
-    lines.push(`Mode 01 PIDs: ${c.mode01_total} captured, ${c.mode01_answerable} answerable (${c.mode01_unanswered} no encoder)`);
+    lines.push(`Mode 01 PIDs: ${c.mode01_total} captured, ${c.mode01_answerable} answerable (${c.mode01_via_formula || 0} formula + ${c.mode01_via_raw || 0} raw passthrough, ${c.mode01_unanswered} no encoder)`);
     lines.push(`Mode 09 fields present: ${c.mode09_present.length ? c.mode09_present.join(", ") : "(none)"}`);
     if (c.mode22_total) lines.push(`Mode 22 (manufacturer) PIDs: ${c.mode22_total}`);
     lines.push("");

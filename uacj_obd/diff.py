@@ -53,6 +53,30 @@ def _pid_stats(samples: list[dict]) -> dict[str, dict]:
     return out
 
 
+def _raw_pid_keys(samples: list[dict]) -> set[str]:
+    """
+    v0.6.14: return PIDs whose only stored values were raw markers
+    ("raw:HEX" — captured via v0.6.13's python-obd decoder fallback).
+    These are excluded from numeric per-PID stats but still represent
+    real captured coverage; the diff result surfaces the count so
+    the instructor knows N PIDs weren't statistically compared.
+    """
+    raw: set[str] = set()
+    numeric: set[str] = set()
+    for s in samples:
+        pid = s.get("pid")
+        v = s.get("value")
+        if not isinstance(pid, str):
+            continue
+        if isinstance(v, (int, float)):
+            numeric.add(pid)
+        elif isinstance(v, str) and v.startswith("raw:"):
+            raw.add(pid)
+    # A PID with at least one numeric reading is in stats; the raw-only
+    # set is what's missing from the stats comparison.
+    return raw - numeric
+
+
 def diff_sessions(folder_a: Path, folder_b: Path) -> dict[str, Any]:
     """
     Compute the structured diff between two saved sessions on disk.
@@ -102,6 +126,10 @@ def diff_sessions(folder_a: Path, folder_b: Path) -> dict[str, Any]:
     live_b = _load_jsonl(folder_b / "live_data.jsonl")
     stats_a = _pid_stats(live_a)
     stats_b = _pid_stats(live_b)
+    # v0.6.14: raw-only PIDs are captured but excluded from numeric stats.
+    # Surface the count so the instructor knows N PIDs were skipped.
+    raw_a = _raw_pid_keys(live_a)
+    raw_b = _raw_pid_keys(live_b)
     pids_changed = []
     for pid in sorted(set(stats_a.keys()) | set(stats_b.keys())):
         sa, sb = stats_a.get(pid), stats_b.get(pid)
@@ -133,4 +161,8 @@ def diff_sessions(folder_a: Path, folder_b: Path) -> dict[str, Any]:
         "dtcs": dtcs,
         "monitors_changed": monitors_changed,
         "pids": pids_changed,
+        "raw_pids_a": sorted(raw_a),
+        "raw_pids_b": sorted(raw_b),
+        "raw_pids_only_a": sorted(raw_a - raw_b),
+        "raw_pids_only_b": sorted(raw_b - raw_a),
     }
