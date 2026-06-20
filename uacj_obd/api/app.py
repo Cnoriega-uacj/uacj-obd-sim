@@ -310,6 +310,7 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
                 meta = {}
         discovered_pids = sorted(meta.get("discovered_pids") or [])
         pid_resolution_source = meta.get("pid_resolution_source", "")
+        adapter_metrics = meta.get("adapter_metrics") or {}
 
         captured: set[str] = set()
         captured_raw: set[str] = set()
@@ -354,6 +355,7 @@ def create_app(data_root: str | Path = "data") -> FastAPI:
             "captured_only_pids": captured_only,
             "missing_after_capture": missing_after_capture,
             "total_samples": row.get("sample_count", 0),
+            "adapter_metrics": adapter_metrics,
         }
 
     @app.get("/api/sessions/{session_id}/live")

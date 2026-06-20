@@ -217,6 +217,13 @@ class Elm327Adapter(Adapter):
         self._stn_banner: str | None = None
         self._conn: "pyobd.OBD | None" = None  # type: ignore[name-defined]
         self._last_error: str | None = None
+        # v0.6.16: capture-side counters surfaced through read_metrics().
+        # Track how many times the raw fallback fires vs how many of those
+        # actually return bytes — Cristopher's session diagnostics needs
+        # this to distinguish "adapter never tried raw" from "adapter
+        # tried but bus was silent".
+        self._raw_attempts: int = 0
+        self._raw_successes: int = 0
 
     # --- lifecycle -----------------------------------------------------
 
@@ -485,81 +492,77 @@ class Elm327Adapter(Adapter):
 
     def _read_pid_raw(self, pid: str, mode: int, pid_num: int) -> LiveSample | None:
         """
-        v0.6.13: fallback path for PIDs python-obd can't decode. Send
-        the request as a synthesised OBDCommand with a noop decoder
-        and store the raw response bytes as `"raw:HEX"` in the sample.
-        The simulator's pass-through encoder will replay those bytes
-        verbatim.
+        v0.6.16: fallback path for PIDs python-obd can't decode. Bypasses
+        `c.query()` (which gates on python-obd's command-level validation
+        and is_null logic) and talks directly to the ELM327 interface
+        via `interface.send_and_parse(b"0114")`. This is the same low
+        level python-obd uses internally but without the command/
+        OBDResponse wrapper that was discarding our raw responses on
+        the Mazda3 bench (v0.6.13 fell through here).
 
         Only fires for Mode 01 — Mode 09 vehicle-info has dedicated
         read paths above, and Mode 02/03/etc. are static services
         the simulator answers from scenario state directly.
+
+        Bumps `_raw_attempts` regardless of outcome and `_raw_successes`
+        only when bytes are actually returned. These counts surface in
+        the session diagnostics endpoint so the instructor can see
+        "fallback fired 22 times, captured 17 of them" — distinguishing
+        adapter-side dropouts from bitmap-derivation gaps.
         """
         if mode != 0x01:
             return None
         if not _HAS_OBD:
             return None
         try:
-            from obd import OBDCommand, ECU
-            from obd.decoders import noop
-        except Exception:  # pragma: no cover
-            return None
-        try:
             c = self._ensure()
         except AdapterError:
             return None
+
+        self._raw_attempts += 1
+
+        iface = getattr(c, "interface", None)
+        if iface is None or not hasattr(iface, "send_and_parse"):
+            log.debug("raw read %s: no interface available", pid)
+            return None
+
+        cmd_string = f"{mode:02X}{pid_num:02X}".encode("ascii")
         try:
-            cmd = OBDCommand(
-                f"raw_pid_{pid}",
-                f"raw passthrough Mode {mode:02X} PID {pid_num:02X}",
-                f"{mode:02X}{pid_num:02X}".encode("ascii"),
-                # We don't know the response length; python-obd will
-                # accept whatever the ECU returns.
-                0,
-                noop,
-                ECU.ENGINE,
-            )
-            response = c.query(cmd, force=True)
+            messages = iface.send_and_parse(cmd_string)
         except Exception as exc:
-            log.debug("raw read %s failed: %s", pid, exc)
+            log.debug("raw read %s: send_and_parse raised %s", pid, exc)
             return None
-        if response is None or response.is_null():
+
+        if not messages:
+            log.debug("raw read %s: empty messages from interface", pid)
             return None
-        # Reuse the bitmap-extraction helper to pull data bytes out of
-        # whatever response shape python-obd produced. For a normal
-        # Mode 01 data response, the data bytes ARE the payload (no
-        # bitmap parsing needed) — we just want them as hex.
-        candidates = _extract_all_bitmap_candidates(response)
-        # _extract_all_bitmap_candidates trims to 4 bytes assuming a
-        # bitmap. For arbitrary PIDs we want the full payload.
-        all_messages: list[bytes] = []
-        val = getattr(response, "value", None)
-        if isinstance(val, list):
-            for m in val:
-                data = getattr(m, "data", None)
-                if isinstance(data, (bytes, bytearray)):
-                    all_messages.append(bytes(data))
-        for msg in getattr(response, "messages", []) or []:
+
+        # Walk every message and pick the first that has actual data
+        # bytes. On multi-ECU CAN responses, the engine ($7E8) is
+        # typically first; on K-Line the only message is the single
+        # ECU we addressed.
+        for msg in messages:
             data = getattr(msg, "data", None)
-            if isinstance(data, (bytes, bytearray)):
-                all_messages.append(bytes(data))
-        if not all_messages and candidates:
-            all_messages = candidates
-        if not all_messages:
-            return None
-        # Strip the 0x41 + PID echo prefix if present.
-        raw = all_messages[0]
-        if len(raw) >= 2 and raw[0] == (0x40 | mode):
-            raw = raw[2:]
-        if not raw:
-            return None
-        hex_str = raw.hex().upper()
-        return LiveSample(
-            pid=pid,
-            name=f"raw {pid}",
-            value=f"raw:{hex_str}",
-            unit=None,
-        )
+            if not isinstance(data, (bytes, bytearray)) or not data:
+                continue
+            raw = bytes(data)
+            # Strip the 0x41 + PID echo prefix if present.
+            if len(raw) >= 2 and raw[0] == (0x40 | mode):
+                raw = raw[2:]
+            if not raw:
+                continue
+            hex_str = raw.hex().upper()
+            self._raw_successes += 1
+            log.debug("raw read %s: captured %s", pid, hex_str)
+            return LiveSample(
+                pid=pid,
+                name=f"raw {pid}",
+                value=f"raw:{hex_str}",
+                unit=None,
+            )
+
+        log.debug("raw read %s: messages had no usable data bytes", pid)
+        return None
 
     def stream_pids(self, pids: Iterable[str]) -> Iterable[LiveSample]:
         pids = list(pids)
@@ -682,6 +685,20 @@ class Elm327Adapter(Adapter):
                 ready=not bool(getattr(test, "incomplete", True)),
             ))
         return out
+
+    def read_metrics(self) -> dict[str, int]:
+        """
+        v0.6.16: counts how many times the raw-passthrough fallback
+        fired and how many of those produced data. Surfaced in the
+        session diagnostics endpoint so a low capture count can be
+        diagnosed as either "fallback never tried" (raw_attempts=0)
+        or "fallback tried but bus silent" (raw_attempts > 0,
+        raw_successes < attempts).
+        """
+        return {
+            "raw_attempts": self._raw_attempts,
+            "raw_successes": self._raw_successes,
+        }
 
     def read_raw(self, mode: int, pid: int | None = None) -> bytes | None:
         c = self._ensure()

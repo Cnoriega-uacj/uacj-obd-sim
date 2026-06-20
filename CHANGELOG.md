@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.6.16 — 2026-06-19
+
+**Raw-read bypass + adapter telemetry.** Cristopher's first v0.6.15
+recapture surfaced a precise failure mode: 34 PIDs discovered (raw
+bitmap probe working), 12 captured, **0 raw passthrough**. The
+v0.6.13 fallback fired but every response came back null. Root
+cause: `c.query(cmd, force=True)` runs through python-obd's
+`OBDResponse.is_null()` gate, which trips when the ELM327 echoes
+a "?" or empty frame after the previous failed decoded query —
+even though the bus did return real data.
+
+### Fix
+
+`_read_pid_raw` now bypasses `c.query()` entirely and calls
+`c.interface.send_and_parse(cmd_string)` directly — the same low
+level python-obd uses internally, but without the OBDCommand /
+OBDResponse wrapper that was discarding our captures. Returns a
+`list[Message]`; we walk the messages looking for the first with
+real `.data` bytes, strip the `0x41 + PID` echo, and write
+`"raw:HEX"` into the LiveSample.
+
+This is the path that should pick up O2 sensors, catalyst temps,
+fuel rail pressure, and the other PIDs Cristopher saw the Innova
+read directly but python-obd refused.
+
+### New adapter telemetry
+
+`Adapter.read_metrics()` (new optional method on the base class)
+lets adapters surface capture-side counters. Elm327Adapter
+implements it with `raw_attempts` and `raw_successes`:
+- `raw_attempts` — how many times the raw fallback fired
+- `raw_successes` — how many returned actual data
+
+The acquisition session snapshots these into `metadata.json` at
+close time (`SessionMetadata.adapter_metrics`); the diagnostics
+endpoint exposes them; the dashboard session page shows the rate
+inline:
+```
+Raw fallback: 17/22 succeeded (77%)
+```
+That single line distinguishes "fallback never tried" (attempts
+== 0) from "fallback tried but the bus was silent" (successes <
+attempts) from "fallback working" (rate near 100%).
+
+### Tests
+
+`tests/test_raw_bypass_v0616.py` — 16 tests covering happy path
+(echo + no-echo prefix), multi-message fall-through, empty
+`messages`, None `messages`, interface exception, all-data-empty,
+non-mode-01 skip (no counter bump), no-interface attribute,
+disconnected adapter, exact command-string format (`b"0114"` not
+`b"01 14"`), metrics initialization, multi-call accumulation,
+base-class default empty, end-to-end acquisition-writes-metrics,
+and diagnostics endpoint surfaces metrics.
+
+v0.6.13 tests updated to the new `interface.send_and_parse` fake
+shape — 661 tests pass overall.
+
 ## 0.6.15 — 2026-06-19
 
 **Raw-passthrough integration hardening.** v0.6.13 added unit

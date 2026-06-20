@@ -84,6 +84,13 @@ class SessionMetadata(BaseModel):
     # only got 10" gap without re-running the session.
     discovered_pids: list[str] = Field(default_factory=list)
     pid_resolution_source: str = ""
+    # v0.6.16: adapter-side telemetry. `raw_attempts` is how many times
+    # the raw-passthrough fallback fired (because python-obd had no
+    # decoder or returned null); `raw_successes` is how many of those
+    # produced data the simulator can replay. The gap between them
+    # indicates a bus-silent / adapter-stalled condition the bitmap
+    # probe alone can't explain.
+    adapter_metrics: dict[str, int] = Field(default_factory=dict)
 
 
 class Scenario(BaseModel):

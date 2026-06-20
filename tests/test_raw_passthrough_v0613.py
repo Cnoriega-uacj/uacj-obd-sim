@@ -163,24 +163,28 @@ def test_mode01_pid_answer_uses_raw_passthrough() -> None:
 # Elm327Adapter._read_pid_raw
 # ---------------------------------------------------------------------------
 
-class _FakeConn:
+class _FakeInterface:
+    """v0.6.16: stands in for python-obd ELM327.interface.
+    `_read_pid_raw` now calls `c.interface.send_and_parse(cmd_bytes)`
+    instead of the old OBDCommand+query path."""
+
     def __init__(self, response_bytes: bytes | None) -> None:
         self._response_bytes = response_bytes
-        self.queries: list[bytes] = []
+        self.sent: list[bytes] = []
+
+    def send_and_parse(self, cmd: bytes):
+        self.sent.append(cmd)
+        if self._response_bytes is None:
+            return None
+        return [SimpleNamespace(data=self._response_bytes)]
+
+
+class _FakeConn:
+    def __init__(self, response_bytes: bytes | None) -> None:
+        self.interface = _FakeInterface(response_bytes)
 
     def is_connected(self) -> bool:
         return True
-
-    def query(self, cmd, force=False):
-        self.queries.append(cmd.command)
-        if self._response_bytes is None:
-            return SimpleNamespace(value=None, messages=[], is_null=lambda: True)
-        msg = SimpleNamespace(data=self._response_bytes)
-        return SimpleNamespace(
-            value=[msg],
-            messages=[msg],
-            is_null=lambda: False,
-        )
 
 
 def test_read_pid_raw_returns_live_sample_with_raw_marker() -> None:

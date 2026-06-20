@@ -257,6 +257,18 @@ class AcquisitionSession:
     def close(self) -> Path:
         if self._writer is None or self.meta is None:
             raise RuntimeError("session not started")
+        # v0.6.16: snapshot adapter metrics BEFORE disconnecting so we
+        # capture the raw_attempts / raw_successes counters in the
+        # session's metadata.json. The diagnostics endpoint reads
+        # them back later.
+        try:
+            metrics = self.adapter.read_metrics()
+            if metrics:
+                self.meta.adapter_metrics = dict(metrics)
+                self._writer.meta.adapter_metrics = dict(metrics)
+                self._writer._save_metadata()
+        except Exception as exc:
+            log.debug("adapter metrics snapshot failed: %s", exc)
         self._writer.close()
         self.db.update_session(
             self.meta.session_id,

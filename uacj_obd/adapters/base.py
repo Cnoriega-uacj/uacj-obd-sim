@@ -70,6 +70,14 @@ class Adapter(ABC):
     @abstractmethod
     def read_monitors(self) -> list[Monitor]: ...
 
+    def read_metrics(self) -> dict[str, int]:
+        """
+        v0.6.16: optional capture-side counters surfaced for diagnostics.
+        Subclasses may override to report adapter-specific telemetry like
+        raw-passthrough attempts and successes. Default = no telemetry.
+        """
+        return {}
+
     @abstractmethod
     def read_raw(self, mode: int, pid: int | None = None) -> bytes | None:
         """Send a raw OBD service request; for mode 0x22 manufacturer PIDs."""
