@@ -27,8 +27,10 @@ Pass criteria: every step matches what the laptop dashboard shows.
 
 ## Tools we expect to test
 
-Predictions assume the v0.4.0 simulator (CAN ✅, K-Line ✅ incl. 5-baud
-slow-init, J1850 framing ✅ but transmitter chip not yet in BOM).
+Predictions assume the v0.6.16 simulator (CAN ✅, K-Line ✅ incl. 5-baud
+slow-init, J1850 framing ✅ with VPW + PWM transceiver add-ons documented
+in [wiring_walkthrough_stage2.md](wiring_walkthrough_stage2.md);
+raw-bytes capture + replay for PIDs python-obd lacks decoders for).
 
 | Tool | Protocols (per spec) | Predicted | Notes |
 |---|---|---|---|
@@ -52,7 +54,7 @@ slow-init, J1850 framing ✅ but transmitter chip not yet in BOM).
 
 | Tool (firmware) | Protocols | Result | Notes |
 |---|---|---|---|
-| Innova 5210 | CAN | ✅ Verified working — six-step methodology passes once the 120 Ω OBD-end terminator is in place. The 5210 does **not** carry its own terminator; without the external 120 Ω resistor across pins 6 ↔ 14, AUTO-LINK stalls and `candump can0` floods with `000 [0]` error frames. Once terminated, the tool reports "Linked to CAN" within ~3 s and reads VIN, I/M monitor status, and Mode 03 DTCs correctly. Tested 2026-06-15 on the UACJ install. | This is a strong signal for all consumer Innova / Autel / generic ELM327 tools: assume they do **not** ship their own terminator, and always wire the 120 Ω externally per `docs/wiring.md` Connection 3.5. |
+| Innova 5210 | CAN | ✅ Verified working — six-step methodology passes once the 120 Ω OBD-end terminator is in place. The 5210 does **not** carry its own terminator; without the external 120 Ω resistor across pins 6 ↔ 14, AUTO-LINK stalls and `candump can0` floods with `000 [0]` error frames. Once terminated, the tool reports "Linked to CAN" within ~3 s. Confirmed working on bench testing (2026-06-19): **Vehicle ID page** (Global Format, decoded year + make + VIN + module $7E8), **I/M Monitor Status** (all monitors visible with correct supported/ready flags — emissions readiness page renders fully green when the scenario has no stored DTCs), **Mode 03 DTCs** (read, count, decode), **Mode 04 Clear** (stored + pending DTCs cleared, permanent DTCs retained per spec), **Powertrain Live Data** (pages through every PID the simulator advertises in the bitmap — confirmed 10+ PIDs on a Mazda3 capture). Earlier (2026-06-15) confirmed VIN, monitor status, and Mode 03 — additional pages verified during post-install hardening. | This is a strong signal for all consumer Innova / Autel / generic ELM327 tools: assume they do **not** ship their own terminator, and always wire the 120 Ω externally per `docs/wiring.md` Connection 3.5. |
 
 ---
 
@@ -74,11 +76,15 @@ These are board-side, not tool-side:
 
 - **J1850 VPW / PWM** (pre-CAN GM/Ford 2004–2007): framing layer is
   implemented and unit-tested as of v0.4.0; the electrical-side
-  transceiver (MC33390 for VPW, dual-wire driver for PWM) is **not in
-  the v1 BOM**. Once a transceiver is wired to the Pi UART, the same
-  J1850Runtime answers requests with no further code changes.
-  Workaround until then: any 2008+ vehicle in the scenario library, or
-  any 2003+ vehicle that uses CAN or K-Line.
+  transceiver is documented as an **optional Stage-2 add-on** in
+  [wiring_walkthrough_stage2.md](wiring_walkthrough_stage2.md). The
+  LM358 + 2N7000 + R1 pull-up bill of materials for VPW costs ~$10
+  and the AM26LS31/32 pair for PWM costs ~$15. Once wired, the same
+  J1850Runtime answers requests with no further code changes — pick
+  the active protocol per scenario via the `j1850_variant` field
+  (`"vpw"` / `"pwm"` / absent for CAN+K-Line only).
+  Workaround if not wired: any 2008+ vehicle in the scenario library,
+  or any 2003+ vehicle that uses CAN or K-Line.
 - **5-baud slow-init**: implemented in v0.3.0. Most modern adapters use
   KWP fast-init (CARB EOBD), but a few older units may still rely on
   the slower 5-baud sequence — we now answer it.
