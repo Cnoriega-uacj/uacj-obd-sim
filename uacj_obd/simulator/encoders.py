@@ -218,6 +218,70 @@ def _enc_fuel_rate(l_per_h: float) -> bytes:
     return bytes([(raw >> 8) & 0xFF, raw & 0xFF])
 
 
+def _enc_multi_ect(value) -> bytes:
+    """
+    PID 0x67 — Engine Coolant Temperature, multi-sensor.
+
+    Response: 1 byte supported-sensor bitmap + 1 or 2 ECT bytes
+    (each = degrees C + 40, range -40..215 °C).
+
+    Accepts either:
+      - a single number → wraps as ECT-1 supported only
+      - a 2-element list/tuple → both sensors
+      - a string "raw:HEX" → already a passthrough (handled upstream)
+
+    Cristopher's bench Innova showed "ECT 1" and "ECT 2" on the
+    2012 Mazda3 — the TCM reports its own copy of the coolant
+    sensor reading separately from the engine ECU. v0.6.17 adds
+    this encoder so scenarios carrying multi-ECT values answer
+    PID 0x67 correctly.
+    """
+    if isinstance(value, (list, tuple)):
+        ects = list(value)[:2]
+    else:
+        try:
+            ects = [float(value)]
+        except (TypeError, ValueError):
+            return bytes([0x00])
+    # Bitmap: bit 0 = ECT1 supported, bit 1 = ECT2 supported.
+    bitmap = 0
+    out = bytearray()
+    for i, ect in enumerate(ects):
+        if ect is None:
+            continue
+        bitmap |= 1 << i
+        out.append(_u8(float(ect) + 40))
+    return bytes([bitmap]) + bytes(out)
+
+
+def _enc_multi_iat(value) -> bytes:
+    """
+    PID 0x68 — Intake Air Temperature, multi-sensor.
+
+    Response: 1 byte supported-sensor bitmap + up to 8 IAT bytes.
+    Cristopher's Innova showed "IAT 11" and "IAT 12" — two bank-1
+    intake sensors. Per spec the bitmap can describe sensors 1-1
+    through 4-2.
+
+    Same value shape as `_enc_multi_ect`: number, list, or "raw:HEX".
+    """
+    if isinstance(value, (list, tuple)):
+        iats = list(value)[:8]
+    else:
+        try:
+            iats = [float(value)]
+        except (TypeError, ValueError):
+            return bytes([0x00])
+    bitmap = 0
+    out = bytearray()
+    for i, iat in enumerate(iats):
+        if iat is None:
+            continue
+        bitmap |= 1 << i
+        out.append(_u8(float(iat) + 40))
+    return bytes([bitmap]) + bytes(out)
+
+
 def _enc_two_byte_freeze_dtc(value: float | int | str) -> bytes:
     # PID 0x02: 2-byte DTC reference for the freeze frame. Default to zero
     # if the scenario doesn't carry a specific freeze DTC pointer.
@@ -306,6 +370,9 @@ _ENCODERS: dict[str, Callable[..., bytes]] = {
     "015B": _enc_pct_u8,             # hybrid battery pack remaining life
     "015C": _enc_temp_minus_40,      # engine oil temperature
     "015E": _enc_fuel_rate,
+    # --- v0.6.17 multi-sensor PIDs (Innova bench-observed on Mazda3) ---
+    "0167": _enc_multi_ect,          # ECT 1 / ECT 2 (multi-sensor)
+    "0168": _enc_multi_iat,          # IAT 11 / IAT 12 (multi-sensor)
 }
 
 

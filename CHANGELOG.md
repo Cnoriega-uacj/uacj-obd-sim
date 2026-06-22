@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.6.17 — 2026-06-21
+
+**Multi-ECU discovery + multi-sensor encoders.** Cristopher's Innova
+on the real Mazda3 showed parameters our adapter wasn't seeing:
+specifically "ECT 1" / "ECT 2" and "IAT 11" / "IAT 12" — duplicate
+sensor readings from the transmission ECU at `$7E9`. v0.6.17 closes
+both gaps that the bench photos surfaced.
+
+### Multi-ECU bitmap probe
+
+`_raw_supported_pids()` previously synthesised `OBDCommand`s with
+`ECU.ENGINE` — python-obd then filtered out any response that
+didn't come from `$7E8`. That silently dropped trans-ECU PIDs from
+the discovered set, even though the multi-ECU OR was already in
+`_extract_bitmap_bytes`. Switched to `ECU.ALL` (value 255 in
+python-obd, the wildcard) so both engine and transmission responses
+flow through; the OR'ing helper then unions their bitmaps as
+intended.
+
+### PID 0x67 — multi-ECT encoder
+
+New `_enc_multi_ect`. Per SAE J1979 the response is a 1-byte
+supported-sensor bitmap plus 1–2 ECT bytes (each `°C + 40`).
+Accepts a single number, a 2-element list, or the `"raw:HEX"`
+passthrough marker. Lets the simulator answer `01 67` with the
+right shape for scenarios that carry multi-ECT data.
+
+### PID 0x68 — multi-IAT encoder
+
+New `_enc_multi_iat`. Same shape as 0x67 but supports up to 8
+sensors per the J1979 bitmap. Truncates lists longer than 8.
+
+### Tests
+
+`tests/test_multi_ecu_v0617.py` — 18 tests covering encoder
+registration, single-number and list inputs, sub-zero / high-temp
+clamping, invalid-value graceful empty, raw passthrough taking
+priority over the formula, multi-IAT 8-sensor cap, raw probe using
+`ECU.ALL`, multi-ECU response union, end-to-end simulator answers
+for both PIDs, and the supported-PID bitmap advertising PID 0x67
+when state carries it.
+
+**685 tests pass.**
+
 ## 0.6.16 — 2026-06-19
 
 **Raw-read bypass + adapter telemetry.** Cristopher's first v0.6.15

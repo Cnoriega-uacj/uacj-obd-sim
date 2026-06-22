@@ -392,6 +392,13 @@ class Elm327Adapter(Adapter):
 
         out: set[str] = set()
         groups_with_data: list[int] = []
+        # v0.6.17: probe with ECU.ALL (= 255) so the response collector
+        # accepts messages from BOTH engine ($7E8) AND transmission
+        # ($7E9) ECUs. Cristopher's bench Mazda3 had the Innova
+        # showing "ECT 2" / "IAT 12" / etc. — duplicate sensor readings
+        # the TCM responds to but the engine ECU doesn't. ECU.ENGINE
+        # filtering was dropping them silently.
+        ecu_any = getattr(ECU, "ALL", ECU.ENGINE)
         for group_pid in (0x00, 0x20, 0x40, 0x60, 0x80, 0xA0, 0xC0, 0xE0):
             try:
                 cmd = OBDCommand(
@@ -400,7 +407,7 @@ class Elm327Adapter(Adapter):
                     f"01{group_pid:02X}".encode("ascii"),
                     4,
                     noop,
-                    ECU.ENGINE,
+                    ecu_any,
                 )
                 resp = c.query(cmd, force=True)
             except Exception as exc:
